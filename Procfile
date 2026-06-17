@@ -1,1 +1,1 @@
-web: npx serve -s build -l ${PORT:-3000}
+web: node_modules/.bin/serve -s build -l ${PORT:-3000}

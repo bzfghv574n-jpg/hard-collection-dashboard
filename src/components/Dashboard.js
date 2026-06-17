@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
+import React, { useState, useEffect } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
@@ -96,7 +96,7 @@ export default function Dashboard() {
       const interval = setInterval(loadTrack, 15000);
       return () => clearInterval(interval);
     }
-  }, [selected, archiveTab, archiveDate]);
+  }, [selected, archiveTab, archiveDate, archiveCrew]);
 
   const selCrew = crews.find(c => c.crew.id === selected);
   const selTrack = tracks[selected] || [];

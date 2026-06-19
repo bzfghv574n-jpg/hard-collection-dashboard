@@ -197,11 +197,41 @@ export default function Dashboard() {
   const exportExcel = async () => {
     try {
       const res = await axios.get(`${API}/reports/summary`, {
-        params: { date_from: archiveDate, date_to: archiveDate, crew_id: archiveCrew }
+        params: { date_from: archiveDate, date_to: archiveDate, ...(archiveCrew ? { crew_id: archiveCrew } : {}) }
       });
-      const stopsRes = await axios.get(`${API}/stops/${archiveCrew}`, {
-        params: { shift_date: archiveDate }
-      });
+
+      // Если выбран конкретный экипаж — загружаем его точки
+      // Если "Все" — собираем точки по всем экипажам
+      let stopRows = [];
+      if (archiveCrew) {
+        const stopsRes = await axios.get(`${API}/stops/${archiveCrew}`, { params: { shift_date: archiveDate } });
+        stopRows = stopsRes.data.map(st => ({
+          'Экипаж': res.data.find(s => s.crew_id === archiveCrew)?.crews?.name || '',
+          'Метка': st.point_label,
+          'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
+          'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
+          'Длительность (мин)': st.duration_minutes || '',
+        }));
+      } else {
+        // Все экипажи
+        const crewIds = [...new Set(res.data.map(s => s.crew_id))];
+        for (const cid of crewIds) {
+          const crewName = res.data.find(s => s.crew_id === cid)?.crews?.name || '';
+          try {
+            const stopsRes = await axios.get(`${API}/stops/${cid}`, { params: { shift_date: archiveDate } });
+            stopsRes.data.forEach(st => {
+              stopRows.push({
+                'Экипаж': crewName,
+                'Метка': st.point_label,
+                'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
+                'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
+                'Длительность (мин)': st.duration_minutes || '',
+              });
+            });
+          } catch(e) {}
+        }
+      }
+
       const rows = res.data.map(s => ({
         'Дата': s.date,
         'Экипаж': s.crews?.name || '',
@@ -213,19 +243,15 @@ export default function Dashboard() {
         'Расход (л)': parseFloat(s.fuel_used || 0).toFixed(2),
         'Стоимость (₸)': parseFloat(s.fuel_cost || 0).toFixed(0),
       }));
-      const stopRows = stopsRes.data.map(st => ({
-        'Метка': st.point_label,
-        'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
-        'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
-        'Длительность (мин)': st.duration_minutes || '',
-      }));
+
       const ws1 = XLSX.utils.json_to_sheet(rows);
       const ws2 = XLSX.utils.json_to_sheet(stopRows);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws1, 'Смены');
       XLSX.utils.book_append_sheet(wb, ws2, 'Точки остановок');
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      saveAs(new Blob([buf]), `hard_collection_${archiveDate}.xlsx`);
+      const suffix = archiveCrew ? archiveCrew.slice(0,8) : 'all';
+      saveAs(new Blob([buf]), `hard_collection_${archiveDate}_${suffix}.xlsx`);
     } catch(e) { alert('Ошибка выгрузки'); }
   };
 
@@ -291,6 +317,7 @@ export default function Dashboard() {
                 style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }} />
               <select value={archiveCrew} onChange={e => setArchiveCrew(e.target.value)}
                 style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }}>
+                <option value="">— Все экипажи —</option>
                 {crews.map(c => <option key={c.crew.id} value={c.crew.id}>«{c.crew.name}»</option>)}
               </select>
               <button onClick={exportExcel} style={{ width: '100%', padding: '8px', borderRadius: 8, background: '#14532D', border: '1px solid #22C55E44', color: '#22C55E', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>📥 Выгрузить Excel</button>

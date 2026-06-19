@@ -7,6 +7,7 @@ import { saveAs } from 'file-saver';
 import 'leaflet/dist/leaflet.css';
 
 const API = 'https://web-production-c4605.up.railway.app';
+const OSRM = 'https://router.project-osrm.org/match/v1/driving';
 
 const crewIcon = (color) => L.divIcon({
   className: '',
@@ -53,27 +54,54 @@ function Tag({ status }) {
   );
 }
 
-// Компонент для управления картой
 function MapController({ flyTo }) {
   const map = useMap();
   useEffect(() => {
-    if (flyTo) {
-      map.flyTo([flyTo.lat, flyTo.lng], 14, { duration: 1.2 });
-    }
+    if (flyTo) map.flyTo([flyTo.lat, flyTo.lng], 14, { duration: 1.2 });
   }, [flyTo]);
   return null;
+}
+
+// Привязка трека к дорогам через OSRM map matching
+// OSRM принимает максимум 100 точек за раз — разбиваем на чанки
+async function matchToRoads(points) {
+  if (points.length < 2) return points.map(p => [p.lat, p.lng]);
+  try {
+    const CHUNK = 90;
+    let result = [];
+    for (let i = 0; i < points.length; i += CHUNK) {
+      const chunk = points.slice(i, i + CHUNK);
+      const coords = chunk.map(p => `${p.lng},${p.lat}`).join(';');
+      const res = await axios.get(`${OSRM}/${coords}`, {
+        params: { overview: 'full', geometries: 'geojson', radiuses: chunk.map(() => 25).join(';') },
+        timeout: 8000
+      });
+      if (res.data.matchings && res.data.matchings.length > 0) {
+        const geo = res.data.matchings[0].geometry.coordinates;
+        result = result.concat(geo.map(([lng, lat]) => [lat, lng]));
+      } else {
+        result = result.concat(chunk.map(p => [p.lat, p.lng]));
+      }
+    }
+    return result;
+  } catch (e) {
+    // Если OSRM недоступен — возвращаем оригинальный трек
+    return points.map(p => [p.lat, p.lng]);
+  }
 }
 
 export default function Dashboard() {
   const [crews, setCrews] = useState([]);
   const [selected, setSelected] = useState(null);
   const [tracks, setTracks] = useState({});
+  const [matchedTracks, setMatchedTracks] = useState({});
   const [stops, setStops] = useState({});
   const [archiveTab, setArchiveTab] = useState(false);
   const [archiveDate, setArchiveDate] = useState(new Date().toISOString().slice(0,10));
   const [archiveCrew, setArchiveCrew] = useState('');
   const [archiveStats, setArchiveStats] = useState({});
   const [flyTo, setFlyTo] = useState(null);
+  const [matchingLoading, setMatchingLoading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -118,9 +146,20 @@ export default function Dashboard() {
           axios.get(`${API}/gps/track/${selected}`, { params: { shift_date: date } }),
           axios.get(`${API}/stops/${selected}`, { params: { shift_date: date } }),
         ]);
-        setTracks(t => ({ ...t, [selected]: trackRes.data }));
+        const rawTrack = trackRes.data;
+        setTracks(t => ({ ...t, [selected]: rawTrack }));
         setStops(s => ({ ...s, [selected]: stopRes.data }));
-      } catch(e) {}
+
+        // Привязываем к дорогам
+        if (rawTrack.length >= 2) {
+          setMatchingLoading(true);
+          const matched = await matchToRoads(rawTrack);
+          setMatchedTracks(m => ({ ...m, [selected]: matched }));
+          setMatchingLoading(false);
+        }
+      } catch(e) {
+        setMatchingLoading(false);
+      }
     };
     loadTrack();
     if (!archiveTab) {
@@ -136,7 +175,6 @@ export default function Dashboard() {
       return;
     }
     setSelected(crewId);
-    // Находим позицию экипажа и летим туда
     const crew = crews.find(c => c.crew.id === crewId);
     if (crew?.last_position) {
       setFlyTo({ lat: crew.last_position.lat, lng: crew.last_position.lng });
@@ -147,7 +185,7 @@ export default function Dashboard() {
   };
 
   const selCrew = crews.find(c => c.crew.id === selected);
-  const selTrack = tracks[selected] || [];
+  const selTrack = matchedTracks[selected] || tracks[selected]?.map(p => [p.lat, p.lng]) || [];
   const selStops = stops[selected] || [];
 
   const getCrewStats = (crewId) => {
@@ -249,7 +287,7 @@ export default function Dashboard() {
           </div>
           {archiveTab && (
             <>
-              <input type="date" value={archiveDate} onChange={e => { setArchiveDate(e.target.value); setSelected(null); setTracks({}); setStops({}); }}
+              <input type="date" value={archiveDate} onChange={e => { setArchiveDate(e.target.value); setSelected(null); setTracks({}); setMatchedTracks({}); setStops({}); }}
                 style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }} />
               <select value={archiveCrew} onChange={e => setArchiveCrew(e.target.value)}
                 style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }}>
@@ -261,7 +299,12 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+        {matchingLoading && (
+          <div style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, background: '#0E1117', border: '1px solid #2A2F42', borderRadius: 8, padding: '6px 14px', fontSize: 11, color: '#94A3B8' }}>
+            🗺 Привязка к дорогам...
+          </div>
+        )}
         <MapContainer center={[48.0, 68.0]} zoom={5} style={{ flex: 1, minHeight: 0 }} zoomControl={true}>
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='© OpenStreetMap' />
           <MapController flyTo={flyTo} />
@@ -284,7 +327,7 @@ export default function Dashboard() {
           })}
 
           {selTrack.length > 1 && (
-            <Polyline positions={selTrack.map(p => [p.lat, p.lng])} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />
+            <Polyline positions={selTrack} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />
           )}
 
           {selStops.map((stop, i) => (
@@ -309,6 +352,7 @@ export default function Dashboard() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ color: '#F1F5F9', fontWeight: 800, fontSize: 14 }}>«{selCrew.crew.name}»</span>
                 <span style={{ color: '#475569', fontSize: 12 }}>{selCrew.crew.car_brand} {selCrew.crew.car_model}</span>
+                {matchingLoading && <span style={{ color: '#475569', fontSize: 10 }}>привязка к дорогам...</span>}
               </div>
               <button onClick={() => { setSelected(null); setFlyTo(null); }} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
             </div>

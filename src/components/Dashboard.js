@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
+import React, { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
@@ -53,6 +53,17 @@ function Tag({ status }) {
   );
 }
 
+// Компонент для управления картой
+function MapController({ flyTo }) {
+  const map = useMap();
+  useEffect(() => {
+    if (flyTo) {
+      map.flyTo([flyTo.lat, flyTo.lng], 14, { duration: 1.2 });
+    }
+  }, [flyTo]);
+  return null;
+}
+
 export default function Dashboard() {
   const [crews, setCrews] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -61,9 +72,9 @@ export default function Dashboard() {
   const [archiveTab, setArchiveTab] = useState(false);
   const [archiveDate, setArchiveDate] = useState(new Date().toISOString().slice(0,10));
   const [archiveCrew, setArchiveCrew] = useState('');
-  const [archiveStats, setArchiveStats] = useState({}); // stats per crew for archive date
+  const [archiveStats, setArchiveStats] = useState({});
+  const [flyTo, setFlyTo] = useState(null);
 
-  // Загрузка живых данных
   useEffect(() => {
     const load = async () => {
       try {
@@ -77,7 +88,6 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Загрузка архивных статов при смене даты
   useEffect(() => {
     if (!archiveTab || !crews.length) return;
     const loadArchiveStats = async () => {
@@ -85,7 +95,6 @@ export default function Dashboard() {
         const res = await axios.get(`${API}/reports/summary`, {
           params: { date_from: archiveDate, date_to: archiveDate }
         });
-        // Группируем по crew_id
         const stats = {};
         for (const shift of res.data) {
           const cid = shift.crew_id;
@@ -100,7 +109,6 @@ export default function Dashboard() {
     loadArchiveStats();
   }, [archiveTab, archiveDate, crews.length]);
 
-  // Загрузка треков при выборе экипажа
   useEffect(() => {
     if (!selected) return;
     const loadTrack = async () => {
@@ -121,31 +129,41 @@ export default function Dashboard() {
     }
   }, [selected, archiveTab, archiveDate]);
 
+  const handleSelectCrew = (crewId) => {
+    if (selected === crewId) {
+      setSelected(null);
+      setFlyTo(null);
+      return;
+    }
+    setSelected(crewId);
+    // Находим позицию экипажа и летим туда
+    const crew = crews.find(c => c.crew.id === crewId);
+    if (crew?.last_position) {
+      setFlyTo({ lat: crew.last_position.lat, lng: crew.last_position.lng });
+    } else if (tracks[crewId]?.length > 0) {
+      const last = tracks[crewId][tracks[crewId].length - 1];
+      setFlyTo({ lat: last.lat, lng: last.lng });
+    }
+  };
+
   const selCrew = crews.find(c => c.crew.id === selected);
   const selTrack = tracks[selected] || [];
   const selStops = stops[selected] || [];
 
-  // Получаем stats для выбранного экипажа (архив или live)
   const getCrewStats = (crewId) => {
-    if (archiveTab && archiveStats[crewId]) {
-      return archiveStats[crewId];
-    }
+    if (archiveTab && archiveStats[crewId]) return archiveStats[crewId];
     const c = crews.find(x => x.crew.id === crewId);
     return { total_km: c?.total_km || 0, fuel_used: c?.total_fuel || 0, fuel_cost: c?.total_cost || 0 };
   };
 
-  // Excel выгрузка
   const exportExcel = async () => {
     try {
       const res = await axios.get(`${API}/reports/summary`, {
         params: { date_from: archiveDate, date_to: archiveDate, crew_id: archiveCrew }
       });
-
-      // Получаем точки остановок для экипажа
       const stopsRes = await axios.get(`${API}/stops/${archiveCrew}`, {
         params: { shift_date: archiveDate }
       });
-
       const rows = res.data.map(s => ({
         'Дата': s.date,
         'Экипаж': s.crews?.name || '',
@@ -157,14 +175,12 @@ export default function Dashboard() {
         'Расход (л)': parseFloat(s.fuel_used || 0).toFixed(2),
         'Стоимость (₸)': parseFloat(s.fuel_cost || 0).toFixed(0),
       }));
-
       const stopRows = stopsRes.data.map(st => ({
         'Метка': st.point_label,
         'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
         'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
         'Длительность (мин)': st.duration_minutes || '',
       }));
-
       const ws1 = XLSX.utils.json_to_sheet(rows);
       const ws2 = XLSX.utils.json_to_sheet(stopRows);
       const wb = XLSX.utils.book_new();
@@ -175,29 +191,14 @@ export default function Dashboard() {
     } catch(e) { alert('Ошибка выгрузки'); }
   };
 
-  // KPI — для архива суммируем из archiveStats, для live из crews
-  const totalKm = archiveTab
-    ? Object.values(archiveStats).reduce((s, c) => s + c.total_km, 0)
-    : crews.reduce((s, c) => s + (c.total_km || 0), 0);
-  const totalFuel = archiveTab
-    ? Object.values(archiveStats).reduce((s, c) => s + c.fuel_used, 0)
-    : crews.reduce((s, c) => s + (c.total_fuel || 0), 0);
-  const totalCost = archiveTab
-    ? Object.values(archiveStats).reduce((s, c) => s + c.fuel_cost, 0)
-    : crews.reduce((s, c) => s + (c.total_cost || 0), 0);
+  const totalKm = archiveTab ? Object.values(archiveStats).reduce((s, c) => s + c.total_km, 0) : crews.reduce((s, c) => s + (c.total_km || 0), 0);
+  const totalFuel = archiveTab ? Object.values(archiveStats).reduce((s, c) => s + c.fuel_used, 0) : crews.reduce((s, c) => s + (c.total_fuel || 0), 0);
+  const totalCost = archiveTab ? Object.values(archiveStats).reduce((s, c) => s + c.fuel_cost, 0) : crews.reduce((s, c) => s + (c.total_cost || 0), 0);
   const activeCount = crews.filter(c => c.shifts?.some(s => s.status === 'active')).length;
-
-  const mapCenter = [48.0, 68.0];
 
   return (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-      {/* Левая панель */}
-      <div style={{
-        width: 280, flexShrink: 0, background: '#0E1117',
-        borderRight: '1px solid #2A2F42',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden'
-      }}>
-        {/* KPI */}
+      <div style={{ width: 280, flexShrink: 0, background: '#0E1117', borderRight: '1px solid #2A2F42', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px', borderBottom: '1px solid #2A2F42' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             {[
@@ -214,11 +215,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Список экипажей */}
         <div style={{ flex: 1, overflow: 'auto', padding: 10 }}>
-          <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8 }}>
-            ЭКИПАЖИ · {crews.length}
-          </div>
+          <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8 }}>ЭКИПАЖИ · {crews.length}</div>
           {crews.map(c => {
             const crewStatus = archiveTab ? 'offline' : (c.shifts?.find(s => ['active','break','tech'].includes(s.status))?.status || 'offline');
             const stats = getCrewStats(c.crew.id);
@@ -226,80 +224,48 @@ export default function Dashboard() {
             const onlineCount = c.shifts?.length || 0;
             const incomplete = !archiveTab && onlineCount > 0 && onlineCount < memberCount;
             return (
-              <div
-                key={c.crew.id}
-                onClick={() => setSelected(selected === c.crew.id ? null : c.crew.id)}
-                style={{
-                  padding: '9px 11px', borderRadius: 9, cursor: 'pointer', marginBottom: 6,
-                  background: selected === c.crew.id ? '#1C2030' : '#151820',
-                  border: `1px solid ${selected === c.crew.id ? (c.crew.color || '#3B82F6') + '66' : '#2A2F42'}`,
-                  transition: 'all 0.15s'
-                }}
-              >
+              <div key={c.crew.id} onClick={() => handleSelectCrew(c.crew.id)} style={{
+                padding: '9px 11px', borderRadius: 9, cursor: 'pointer', marginBottom: 6,
+                background: selected === c.crew.id ? '#1C2030' : '#151820',
+                border: `1px solid ${selected === c.crew.id ? (c.crew.color || '#3B82F6') + '66' : '#2A2F42'}`,
+                transition: 'all 0.15s'
+              }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
-                  <div style={{
-                    width: 9, height: 9, borderRadius: '50%', flexShrink: 0,
-                    background: c.crew.color || '#3B82F6',
-                    boxShadow: crewStatus === 'active' ? `0 0 6px ${c.crew.color}` : 'none'
-                  }} />
+                  <div style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: c.crew.color || '#3B82F6', boxShadow: crewStatus === 'active' ? `0 0 6px ${c.crew.color}` : 'none' }} />
                   <span style={{ color: '#F1F5F9', fontSize: 12, fontWeight: 700 }}>«{c.crew.name}»</span>
                   {!archiveTab && <Tag status={crewStatus} />}
                 </div>
-                {incomplete && (
-                  <div style={{ marginLeft: 16, marginBottom: 3 }}>
-                    <span style={{ fontSize: 9, color: '#F59E0B', fontWeight: 700 }}>⚠ НЕПОЛНЫЙ СОСТАВ {onlineCount}/{memberCount}</span>
-                  </div>
-                )}
-                <div style={{ color: '#475569', fontSize: 10, paddingLeft: 16 }}>
-                  {c.crew.car_brand} {c.crew.car_model} · {stats.total_km.toFixed(1)} км
-                </div>
+                {incomplete && <div style={{ marginLeft: 16, marginBottom: 3 }}><span style={{ fontSize: 9, color: '#F59E0B', fontWeight: 700 }}>⚠ НЕПОЛНЫЙ СОСТАВ {onlineCount}/{memberCount}</span></div>}
+                <div style={{ color: '#475569', fontSize: 10, paddingLeft: 16 }}>{c.crew.car_brand} {c.crew.car_model} · {stats.total_km.toFixed(1)} км</div>
               </div>
             );
           })}
         </div>
 
-        {/* Архив */}
         <div style={{ padding: 10, borderTop: '1px solid #2A2F42' }}>
           <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-            <button onClick={() => setArchiveTab(false)} style={{
-              flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer',
-              background: !archiveTab ? '#1D3A6E' : 'transparent',
-              border: `1px solid ${!archiveTab ? '#3B82F6' : '#2A2F42'}`,
-              color: !archiveTab ? '#3B82F6' : '#475569'
-            }}>🔴 Live</button>
-            <button onClick={() => setArchiveTab(true)} style={{
-              flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer',
-              background: archiveTab ? '#1D3A6E' : 'transparent',
-              border: `1px solid ${archiveTab ? '#3B82F6' : '#2A2F42'}`,
-              color: archiveTab ? '#3B82F6' : '#475569'
-            }}>📁 Архив</button>
+            <button onClick={() => setArchiveTab(false)} style={{ flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: !archiveTab ? '#1D3A6E' : 'transparent', border: `1px solid ${!archiveTab ? '#3B82F6' : '#2A2F42'}`, color: !archiveTab ? '#3B82F6' : '#475569' }}>🔴 Live</button>
+            <button onClick={() => setArchiveTab(true)} style={{ flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: archiveTab ? '#1D3A6E' : 'transparent', border: `1px solid ${archiveTab ? '#3B82F6' : '#2A2F42'}`, color: archiveTab ? '#3B82F6' : '#475569' }}>📁 Архив</button>
           </div>
           {archiveTab && (
             <>
-              <input type="date" value={archiveDate}
-                onChange={e => { setArchiveDate(e.target.value); setSelected(null); setTracks({}); setStops({}); }}
-                style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }}
-              />
+              <input type="date" value={archiveDate} onChange={e => { setArchiveDate(e.target.value); setSelected(null); setTracks({}); setStops({}); }}
+                style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }} />
               <select value={archiveCrew} onChange={e => setArchiveCrew(e.target.value)}
                 style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }}>
                 {crews.map(c => <option key={c.crew.id} value={c.crew.id}>«{c.crew.name}»</option>)}
               </select>
-              <button onClick={exportExcel} style={{
-                width: '100%', padding: '8px', borderRadius: 8,
-                background: '#14532D', border: '1px solid #22C55E44',
-                color: '#22C55E', fontSize: 12, fontWeight: 700, cursor: 'pointer'
-              }}>📥 Выгрузить Excel</button>
+              <button onClick={exportExcel} style={{ width: '100%', padding: '8px', borderRadius: 8, background: '#14532D', border: '1px solid #22C55E44', color: '#22C55E', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>📥 Выгрузить Excel</button>
             </>
           )}
         </div>
       </div>
 
-      {/* Карта */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <MapContainer center={mapCenter} zoom={5} style={{ flex: 1, minHeight: 0 }} zoomControl={true}>
+        <MapContainer center={[48.0, 68.0]} zoom={5} style={{ flex: 1, minHeight: 0 }} zoomControl={true}>
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='© OpenStreetMap' />
+          <MapController flyTo={flyTo} />
 
-          {/* Маркеры экипажей (только в live режиме) */}
           {!archiveTab && crews.map(c => {
             if (!c.last_position) return null;
             const stats = getCrewStats(c.crew.id);
@@ -317,12 +283,10 @@ export default function Dashboard() {
             );
           })}
 
-          {/* Маршрут */}
           {selTrack.length > 1 && (
             <Polyline positions={selTrack.map(p => [p.lat, p.lng])} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />
           )}
 
-          {/* Точки остановок */}
           {selStops.map((stop, i) => (
             <Marker key={stop.id} position={[stop.lat, stop.lng]} icon={stopIcon(stop.point_label)}>
               <Popup>
@@ -339,7 +303,6 @@ export default function Dashboard() {
           ))}
         </MapContainer>
 
-        {/* Детали выбранного экипажа */}
         {selCrew && (
           <div style={{ background: '#0E1117', borderTop: '1px solid #2A2F42', padding: '12px 16px', flexShrink: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -347,7 +310,7 @@ export default function Dashboard() {
                 <span style={{ color: '#F1F5F9', fontWeight: 800, fontSize: 14 }}>«{selCrew.crew.name}»</span>
                 <span style={{ color: '#475569', fontSize: 12 }}>{selCrew.crew.car_brand} {selCrew.crew.car_model}</span>
               </div>
-              <button onClick={() => setSelected(null)} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
+              <button onClick={() => { setSelected(null); setFlyTo(null); }} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
               {(() => {

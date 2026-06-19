@@ -11,59 +11,56 @@ const OSRM = 'https://router.project-osrm.org/match/v1/driving';
 
 const crewIcon = (color) => L.divIcon({
   className: '',
-  html: `<div style="
-    width:32px;height:32px;border-radius:50%;
-    background:${color};border:3px solid #fff;
-    display:flex;align-items:center;justify-content:center;
-    font-size:11px;font-weight:800;color:#fff;
-    box-shadow:0 2px 8px ${color}88;
-  ">●</div>`,
-  iconSize: [32, 32],
-  iconAnchor: [16, 16],
+  html: `<div style="width:32px;height:32px;border-radius:50%;background:${color};border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;box-shadow:0 2px 8px ${color}88;">●</div>`,
+  iconSize: [32, 32], iconAnchor: [16, 16],
 });
 
 const stopIcon = (label) => L.divIcon({
   className: '',
-  html: `<div style="
-    width:24px;height:24px;border-radius:6px;
-    background:#1C2030;border:2px solid #3B82F6;
-    display:flex;align-items:center;justify-content:center;
-    font-size:9px;font-weight:800;color:#3B82F6;
-  ">${label}</div>`,
-  iconSize: [24, 24],
-  iconAnchor: [12, 12],
+  html: `<div style="width:24px;height:24px;border-radius:6px;background:#1C2030;border:2px solid #3B82F6;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:#3B82F6;">${label}</div>`,
+  iconSize: [24, 24], iconAnchor: [12, 12],
 });
 
 const STATUS = {
-  active:   { label: 'НА ЛИНИИ',    color: '#22C55E' },
-  break:    { label: 'ПЕРЕРЫВ',     color: '#F59E0B' },
-  tech:     { label: 'ТЕХ. СТОП',  color: '#A855F7' },
-  finished: { label: 'ЗАВЕРШИЛ',    color: '#475569' },
-  offline:  { label: 'ОФФЛАЙН',    color: '#374151' },
+  active:   { label: 'НА ЛИНИИ',   color: '#22C55E' },
+  break:    { label: 'ПЕРЕРЫВ',    color: '#F59E0B' },
+  tech:     { label: 'ТЕХ. СТОП', color: '#A855F7' },
+  finished: { label: 'ЗАВЕРШИЛ',   color: '#475569' },
+  offline:  { label: 'ОФФЛАЙН',   color: '#374151' },
 };
 
 function Tag({ status }) {
   const s = STATUS[status] || STATUS.offline;
-  return (
-    <span style={{
-      fontSize: 9, fontWeight: 700, letterSpacing: '0.07em',
-      color: s.color, background: s.color + '22',
-      border: `1px solid ${s.color}44`,
-      borderRadius: 4, padding: '2px 6px'
-    }}>{s.label}</span>
-  );
+  return <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.07em', color: s.color, background: s.color + '22', border: `1px solid ${s.color}44`, borderRadius: 4, padding: '2px 6px' }}>{s.label}</span>;
 }
 
 function MapController({ flyTo }) {
   const map = useMap();
-  useEffect(() => {
-    if (flyTo) map.flyTo([flyTo.lat, flyTo.lng], 14, { duration: 1.2 });
-  }, [flyTo]);
+  useEffect(() => { if (flyTo) map.flyTo([flyTo.lat, flyTo.lng], 14, { duration: 1.2 }); }, [flyTo]);
   return null;
 }
 
-// Привязка трека к дорогам через OSRM map matching
-// OSRM принимает максимум 100 точек за раз — разбиваем на чанки
+// Живой таймер для последней точки остановки
+function StopTimer({ arrivedAt }) {
+  const [elapsed, setElapsed] = useState('');
+  useEffect(() => {
+    const calc = () => {
+      const diff = Math.floor((Date.now() - new Date(arrivedAt).getTime()) / 1000);
+      if (diff < 0) return;
+      const h = Math.floor(diff / 3600);
+      const m = Math.floor((diff % 3600) / 60);
+      const s = diff % 60;
+      if (h > 0) setElapsed(`${h}ч ${m}м`);
+      else if (m > 0) setElapsed(`${m}м ${s}с`);
+      else setElapsed(`${s}с`);
+    };
+    calc();
+    const interval = setInterval(calc, 1000);
+    return () => clearInterval(interval);
+  }, [arrivedAt]);
+  return <span style={{ color: '#F59E0B', fontSize: 9, fontWeight: 700 }}>⏱ {elapsed}</span>;
+}
+
 async function matchToRoads(points) {
   if (points.length < 2) return points.map(p => [p.lat, p.lng]);
   try {
@@ -76,16 +73,14 @@ async function matchToRoads(points) {
         params: { overview: 'full', geometries: 'geojson', radiuses: chunk.map(() => 25).join(';') },
         timeout: 8000
       });
-      if (res.data.matchings && res.data.matchings.length > 0) {
-        const geo = res.data.matchings[0].geometry.coordinates;
-        result = result.concat(geo.map(([lng, lat]) => [lat, lng]));
+      if (res.data.matchings?.length > 0) {
+        result = result.concat(res.data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]));
       } else {
         result = result.concat(chunk.map(p => [p.lat, p.lng]));
       }
     }
     return result;
   } catch (e) {
-    // Если OSRM недоступен — возвращаем оригинальный трек
     return points.map(p => [p.lat, p.lng]);
   }
 }
@@ -102,6 +97,11 @@ export default function Dashboard() {
   const [archiveStats, setArchiveStats] = useState({});
   const [flyTo, setFlyTo] = useState(null);
   const [matchingLoading, setMatchingLoading] = useState(false);
+  const [panelHeight, setPanelHeight] = useState(180); // высота нижней панели
+  const dragRef = useRef(null);
+  const isDragging = useRef(false);
+  const dragStartY = useRef(0);
+  const dragStartH = useRef(0);
 
   useEffect(() => {
     const load = async () => {
@@ -120,9 +120,7 @@ export default function Dashboard() {
     if (!archiveTab || !crews.length) return;
     const loadArchiveStats = async () => {
       try {
-        const res = await axios.get(`${API}/reports/summary`, {
-          params: { date_from: archiveDate, date_to: archiveDate }
-        });
+        const res = await axios.get(`${API}/reports/summary`, { params: { date_from: archiveDate, date_to: archiveDate } });
         const stats = {};
         for (const shift of res.data) {
           const cid = shift.crew_id;
@@ -149,17 +147,13 @@ export default function Dashboard() {
         const rawTrack = trackRes.data;
         setTracks(t => ({ ...t, [selected]: rawTrack }));
         setStops(s => ({ ...s, [selected]: stopRes.data }));
-
-        // Привязываем к дорогам
         if (rawTrack.length >= 2) {
           setMatchingLoading(true);
           const matched = await matchToRoads(rawTrack);
           setMatchedTracks(m => ({ ...m, [selected]: matched }));
           setMatchingLoading(false);
         }
-      } catch(e) {
-        setMatchingLoading(false);
-      }
+      } catch(e) { setMatchingLoading(false); }
     };
     loadTrack();
     if (!archiveTab) {
@@ -168,17 +162,41 @@ export default function Dashboard() {
     }
   }, [selected, archiveTab, archiveDate]);
 
+  // Drag для ползунка нижней панели
+  const onDragStart = (e) => {
+    isDragging.current = true;
+    dragStartY.current = e.clientY || e.touches?.[0]?.clientY;
+    dragStartH.current = panelHeight;
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!isDragging.current) return;
+      const y = e.clientY || e.touches?.[0]?.clientY;
+      const delta = dragStartY.current - y;
+      const newH = Math.min(500, Math.max(60, dragStartH.current + delta));
+      setPanelHeight(newH);
+    };
+    const onUp = () => { isDragging.current = false; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove);
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, []);
+
   const handleSelectCrew = (crewId) => {
-    if (selected === crewId) {
-      setSelected(null);
-      setFlyTo(null);
-      return;
-    }
+    if (selected === crewId) { setSelected(null); setFlyTo(null); return; }
     setSelected(crewId);
     const crew = crews.find(c => c.crew.id === crewId);
-    if (crew?.last_position) {
-      setFlyTo({ lat: crew.last_position.lat, lng: crew.last_position.lng });
-    } else if (tracks[crewId]?.length > 0) {
+    if (crew?.last_position) setFlyTo({ lat: crew.last_position.lat, lng: crew.last_position.lng });
+    else if (tracks[crewId]?.length > 0) {
       const last = tracks[crewId][tracks[crewId].length - 1];
       setFlyTo({ lat: last.lat, lng: last.lng });
     }
@@ -187,6 +205,10 @@ export default function Dashboard() {
   const selCrew = crews.find(c => c.crew.id === selected);
   const selTrack = matchedTracks[selected] || tracks[selected]?.map(p => [p.lat, p.lng]) || [];
   const selStops = stops[selected] || [];
+
+  // Определяем последнюю точку остановки (активную — без duration_minutes или самую новую)
+  const lastStop = selStops.length > 0 ? selStops[selStops.length - 1] : null;
+  const isLastStopActive = lastStop && !lastStop.duration_minutes;
 
   const getCrewStats = (crewId) => {
     if (archiveTab && archiveStats[crewId]) return archiveStats[crewId];
@@ -199,9 +221,6 @@ export default function Dashboard() {
       const res = await axios.get(`${API}/reports/summary`, {
         params: { date_from: archiveDate, date_to: archiveDate, ...(archiveCrew ? { crew_id: archiveCrew } : {}) }
       });
-
-      // Если выбран конкретный экипаж — загружаем его точки
-      // Если "Все" — собираем точки по всем экипажам
       let stopRows = [];
       if (archiveCrew) {
         const stopsRes = await axios.get(`${API}/stops/${archiveCrew}`, { params: { shift_date: archiveDate } });
@@ -213,28 +232,22 @@ export default function Dashboard() {
           'Длительность (мин)': st.duration_minutes || '',
         }));
       } else {
-        // Все экипажи
         const crewIds = [...new Set(res.data.map(s => s.crew_id))];
         for (const cid of crewIds) {
           const crewName = res.data.find(s => s.crew_id === cid)?.crews?.name || '';
           try {
             const stopsRes = await axios.get(`${API}/stops/${cid}`, { params: { shift_date: archiveDate } });
-            stopsRes.data.forEach(st => {
-              stopRows.push({
-                'Экипаж': crewName,
-                'Метка': st.point_label,
-                'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
-                'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
-                'Длительность (мин)': st.duration_minutes || '',
-              });
-            });
+            stopsRes.data.forEach(st => stopRows.push({
+              'Экипаж': crewName, 'Метка': st.point_label,
+              'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
+              'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
+              'Длительность (мин)': st.duration_minutes || '',
+            }));
           } catch(e) {}
         }
       }
-
       const rows = res.data.map(s => ({
-        'Дата': s.date,
-        'Экипаж': s.crews?.name || '',
+        'Дата': s.date, 'Экипаж': s.crews?.name || '',
         'Авто': `${s.crews?.car_brand || ''} ${s.crews?.car_model || ''}`,
         'Сотрудник': s.employees?.full_name || '',
         'Начало смены': s.started_at ? new Date(s.started_at).toLocaleTimeString() : '',
@@ -243,15 +256,13 @@ export default function Dashboard() {
         'Расход (л)': parseFloat(s.fuel_used || 0).toFixed(2),
         'Стоимость (₸)': parseFloat(s.fuel_cost || 0).toFixed(0),
       }));
-
       const ws1 = XLSX.utils.json_to_sheet(rows);
       const ws2 = XLSX.utils.json_to_sheet(stopRows);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws1, 'Смены');
       XLSX.utils.book_append_sheet(wb, ws2, 'Точки остановок');
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      const suffix = archiveCrew ? archiveCrew.slice(0,8) : 'all';
-      saveAs(new Blob([buf]), `hard_collection_${archiveDate}_${suffix}.xlsx`);
+      saveAs(new Blob([buf]), `hard_collection_${archiveDate}_${archiveCrew ? archiveCrew.slice(0,8) : 'all'}.xlsx`);
     } catch(e) { alert('Ошибка выгрузки'); }
   };
 
@@ -262,6 +273,7 @@ export default function Dashboard() {
 
   return (
     <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      {/* Левая панель */}
       <div style={{ width: 280, flexShrink: 0, background: '#0E1117', borderRight: '1px solid #2A2F42', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ padding: '12px', borderBottom: '1px solid #2A2F42' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
@@ -326,93 +338,125 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Правая часть — карта + нижняя панель */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
         {matchingLoading && (
           <div style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, background: '#0E1117', border: '1px solid #2A2F42', borderRadius: 8, padding: '6px 14px', fontSize: 11, color: '#94A3B8' }}>
             🗺 Привязка к дорогам...
           </div>
         )}
-        <MapContainer center={[48.0, 68.0]} zoom={5} style={{ flex: 1, minHeight: 0 }} zoomControl={true}>
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='© OpenStreetMap' />
-          <MapController flyTo={flyTo} />
 
-          {!archiveTab && crews.map(c => {
-            if (!c.last_position) return null;
-            const stats = getCrewStats(c.crew.id);
-            return (
-              <Marker key={c.crew.id} position={[c.last_position.lat, c.last_position.lng]} icon={crewIcon(c.crew.color || '#3B82F6')}>
+        {/* Карта */}
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <MapContainer center={[48.0, 68.0]} zoom={5} style={{ height: '100%', width: '100%' }} zoomControl={true}>
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='© OpenStreetMap' />
+            <MapController flyTo={flyTo} />
+            {!archiveTab && crews.map(c => {
+              if (!c.last_position) return null;
+              const stats = getCrewStats(c.crew.id);
+              return (
+                <Marker key={c.crew.id} position={[c.last_position.lat, c.last_position.lng]} icon={crewIcon(c.crew.color || '#3B82F6')}>
+                  <Popup>
+                    <div style={{ fontFamily: 'Inter, sans-serif', minWidth: 160 }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>«{c.crew.name}»</div>
+                      <div style={{ fontSize: 12, color: '#666' }}>{c.crew.car_brand} {c.crew.car_model}</div>
+                      <div style={{ fontSize: 12, marginTop: 4 }}>Пробег: {stats.total_km.toFixed(1)} км</div>
+                      <div style={{ fontSize: 12 }}>Расход: {stats.fuel_used.toFixed(1)} л</div>
+                    </div>
+                  </Popup>
+                </Marker>
+              );
+            })}
+            {selTrack.length > 1 && <Polyline positions={selTrack} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />}
+            {selStops.map((stop, i) => (
+              <Marker key={stop.id} position={[stop.lat, stop.lng]} icon={stopIcon(stop.point_label)}>
                 <Popup>
-                  <div style={{ fontFamily: 'Inter, sans-serif', minWidth: 160 }}>
-                    <div style={{ fontWeight: 700, marginBottom: 4 }}>«{c.crew.name}»</div>
-                    <div style={{ fontSize: 12, color: '#666' }}>{c.crew.car_brand} {c.crew.car_model}</div>
-                    <div style={{ fontSize: 12, marginTop: 4 }}>Пробег: {stats.total_km.toFixed(1)} км</div>
-                    <div style={{ fontSize: 12 }}>Расход: {stats.fuel_used.toFixed(1)} л</div>
+                  <div style={{ fontFamily: 'Inter, sans-serif' }}>
+                    <div style={{ fontWeight: 700 }}>Точка {stop.point_label}</div>
+                    <div style={{ fontSize: 12, marginTop: 4 }}>{stop.address || 'Адрес определяется'}</div>
+                    <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
+                      {new Date(stop.arrived_at).toLocaleTimeString()}
+                      {stop.duration_minutes ? ` · ${stop.duration_minutes} мин` : ''}
+                    </div>
                   </div>
                 </Popup>
               </Marker>
-            );
-          })}
+            ))}
+          </MapContainer>
+        </div>
 
-          {selTrack.length > 1 && (
-            <Polyline positions={selTrack} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />
-          )}
-
-          {selStops.map((stop, i) => (
-            <Marker key={stop.id} position={[stop.lat, stop.lng]} icon={stopIcon(stop.point_label)}>
-              <Popup>
-                <div style={{ fontFamily: 'Inter, sans-serif' }}>
-                  <div style={{ fontWeight: 700 }}>Точка {stop.point_label}</div>
-                  <div style={{ fontSize: 12, marginTop: 4 }}>{stop.address || 'Адрес определяется'}</div>
-                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
-                    {new Date(stop.arrived_at).toLocaleTimeString()}
-                    {stop.duration_minutes ? ` · ${stop.duration_minutes} мин` : ''}
-                  </div>
-                </div>
-              </Popup>
-            </Marker>
-          ))}
-        </MapContainer>
-
+        {/* Нижняя панель с ползунком */}
         {selCrew && (
-          <div style={{ background: '#0E1117', borderTop: '1px solid #2A2F42', padding: '12px 16px', flexShrink: 0 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ color: '#F1F5F9', fontWeight: 800, fontSize: 14 }}>«{selCrew.crew.name}»</span>
-                <span style={{ color: '#475569', fontSize: 12 }}>{selCrew.crew.car_brand} {selCrew.crew.car_model}</span>
-                {matchingLoading && <span style={{ color: '#475569', fontSize: 10 }}>привязка к дорогам...</span>}
+          <div style={{ background: '#0E1117', borderTop: '1px solid #2A2F42', flexShrink: 0, height: panelHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+            {/* Ползунок — тянуть вверх/вниз */}
+            <div
+              ref={dragRef}
+              onMouseDown={onDragStart}
+              onTouchStart={onDragStart}
+              style={{ height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'ns-resize', flexShrink: 0, borderBottom: '1px solid #2A2F42', userSelect: 'none' }}
+            >
+              <div style={{ width: 40, height: 4, borderRadius: 2, background: '#2A2F42' }} />
+            </div>
+
+            <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px' }}>
+              {/* Заголовок */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ color: '#F1F5F9', fontWeight: 800, fontSize: 14 }}>«{selCrew.crew.name}»</span>
+                  <span style={{ color: '#475569', fontSize: 12 }}>{selCrew.crew.car_brand} {selCrew.crew.car_model}</span>
+                  {matchingLoading && <span style={{ color: '#475569', fontSize: 10 }}>привязка...</span>}
+                </div>
+                <button onClick={() => { setSelected(null); setFlyTo(null); }} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
               </div>
-              <button onClick={() => { setSelected(null); setFlyTo(null); }} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-              {(() => {
-                const stats = getCrewStats(selCrew.crew.id);
-                return [
-                  { label: 'ПРОБЕГ', value: `${stats.total_km.toFixed(1)} км`, color: '#3B82F6' },
-                  { label: 'РАСХОД', value: `${stats.fuel_used.toFixed(1)} л`, color: '#F59E0B' },
-                  { label: 'СТОИМОСТЬ', value: `${stats.fuel_cost.toFixed(0)} ₸`, color: '#F59E0B' },
-                  { label: 'ТОЧЕК', value: selStops.length, color: '#22C55E' },
-                ].map((s, i) => (
-                  <div key={i} style={{ background: '#151820', borderRadius: 8, padding: '8px 12px', border: '1px solid #2A2F42' }}>
-                    <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.08em' }}>{s.label}</div>
-                    <div style={{ color: s.color, fontSize: 18, fontWeight: 800, marginTop: 2 }}>{s.value}</div>
-                  </div>
-                ));
-              })()}
-            </div>
-            {selStops.length > 0 && (
-              <div style={{ display: 'flex', gap: 6, marginTop: 10, overflowX: 'auto', paddingBottom: 2 }}>
-                {selStops.map((stop, i) => (
-                  <div key={i} style={{ flexShrink: 0, background: '#151820', borderRadius: 8, padding: '6px 10px', border: '1px solid #2A2F42', minWidth: 110 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
-                      <div style={{ width: 18, height: 18, borderRadius: 4, background: '#1D3A6E', border: '1px solid #3B82F644', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: '#3B82F6' }}>{stop.point_label}</div>
-                      <span style={{ color: '#475569', fontSize: 10 }}>{new Date(stop.arrived_at).toLocaleTimeString()}</span>
+
+              {/* KPI */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 10 }}>
+                {(() => {
+                  const stats = getCrewStats(selCrew.crew.id);
+                  return [
+                    { label: 'ПРОБЕГ', value: `${stats.total_km.toFixed(1)} км`, color: '#3B82F6' },
+                    { label: 'РАСХОД', value: `${stats.fuel_used.toFixed(1)} л`, color: '#F59E0B' },
+                    { label: 'СТОИМОСТЬ', value: `${stats.fuel_cost.toFixed(0)} ₸`, color: '#F59E0B' },
+                    { label: 'ТОЧЕК', value: selStops.length, color: '#22C55E' },
+                  ].map((s, i) => (
+                    <div key={i} style={{ background: '#151820', borderRadius: 8, padding: '8px 12px', border: '1px solid #2A2F42' }}>
+                      <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.08em' }}>{s.label}</div>
+                      <div style={{ color: s.color, fontSize: 18, fontWeight: 800, marginTop: 2 }}>{s.value}</div>
                     </div>
-                    <div style={{ color: '#94A3B8', fontSize: 10 }}>{stop.address || `${stop.lat.toFixed(4)}, ${stop.lng.toFixed(4)}`}</div>
-                    {stop.duration_minutes ? <div style={{ color: '#F59E0B', fontSize: 9, marginTop: 2 }}>{stop.duration_minutes} мин</div> : null}
-                  </div>
-                ))}
+                  ));
+                })()}
               </div>
-            )}
+
+              {/* Точки остановок */}
+              {selStops.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+                  {selStops.map((stop, i) => {
+                    const isLast = i === selStops.length - 1;
+                    const isActive = isLast && !stop.duration_minutes && !archiveTab;
+                    return (
+                      <div key={i} style={{
+                        flexShrink: 0, background: '#151820', borderRadius: 8, padding: '6px 10px',
+                        border: `1px solid ${isActive ? '#F59E0B44' : '#2A2F42'}`,
+                        minWidth: 120
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          <div style={{ width: 18, height: 18, borderRadius: 4, background: isActive ? '#F59E0B22' : '#1D3A6E', border: `1px solid ${isActive ? '#F59E0B44' : '#3B82F644'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: isActive ? '#F59E0B' : '#3B82F6' }}>{stop.point_label}</div>
+                          <span style={{ color: '#475569', fontSize: 10 }}>{new Date(stop.arrived_at).toLocaleTimeString()}</span>
+                        </div>
+                        <div style={{ color: '#94A3B8', fontSize: 10, marginBottom: 2 }}>{stop.address || `${stop.lat.toFixed(4)}, ${stop.lng.toFixed(4)}`}</div>
+                        {stop.duration_minutes
+                          ? <div style={{ color: '#F59E0B', fontSize: 9 }}>{stop.duration_minutes} мин</div>
+                          : isActive
+                            ? <StopTimer arrivedAt={stop.arrived_at} />
+                            : null
+                        }
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

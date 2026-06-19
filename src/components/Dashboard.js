@@ -9,6 +9,9 @@ import 'leaflet/dist/leaflet.css';
 const API = 'https://web-production-c4605.up.railway.app';
 const OSRM = 'https://router.project-osrm.org/match/v1/driving';
 
+// Определяем мобильный экран
+const isMobile = () => window.innerWidth < 768;
+
 const crewIcon = (color) => L.divIcon({
   className: '',
   html: `<div style="width:32px;height:32px;border-radius:50%;background:${color};border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff;box-shadow:0 2px 8px ${color}88;">●</div>`,
@@ -40,7 +43,6 @@ function MapController({ flyTo }) {
   return null;
 }
 
-// Живой таймер для последней точки остановки
 function StopTimer({ arrivedAt }) {
   const [elapsed, setElapsed] = useState('');
   useEffect(() => {
@@ -86,6 +88,8 @@ async function matchToRoads(points) {
 }
 
 export default function Dashboard() {
+  const [mobile, setMobile] = useState(isMobile());
+  const [sidebarOpen, setSidebarOpen] = useState(!isMobile());
   const [crews, setCrews] = useState([]);
   const [selected, setSelected] = useState(null);
   const [tracks, setTracks] = useState({});
@@ -97,11 +101,19 @@ export default function Dashboard() {
   const [archiveStats, setArchiveStats] = useState({});
   const [flyTo, setFlyTo] = useState(null);
   const [matchingLoading, setMatchingLoading] = useState(false);
-  const [panelHeight, setPanelHeight] = useState(180); // высота нижней панели
-  const dragRef = useRef(null);
+  const [panelHeight, setPanelHeight] = useState(180);
   const isDragging = useRef(false);
   const dragStartY = useRef(0);
   const dragStartH = useRef(0);
+
+  useEffect(() => {
+    const onResize = () => {
+      setMobile(isMobile());
+      if (!isMobile()) setSidebarOpen(true);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -162,7 +174,6 @@ export default function Dashboard() {
     }
   }, [selected, archiveTab, archiveDate]);
 
-  // Drag для ползунка нижней панели
   const onDragStart = (e) => {
     isDragging.current = true;
     dragStartY.current = e.clientY || e.touches?.[0]?.clientY;
@@ -175,8 +186,7 @@ export default function Dashboard() {
       if (!isDragging.current) return;
       const y = e.clientY || e.touches?.[0]?.clientY;
       const delta = dragStartY.current - y;
-      const newH = Math.min(500, Math.max(60, dragStartH.current + delta));
-      setPanelHeight(newH);
+      setPanelHeight(Math.min(500, Math.max(60, dragStartH.current + delta)));
     };
     const onUp = () => { isDragging.current = false; };
     window.addEventListener('mousemove', onMove);
@@ -194,6 +204,7 @@ export default function Dashboard() {
   const handleSelectCrew = (crewId) => {
     if (selected === crewId) { setSelected(null); setFlyTo(null); return; }
     setSelected(crewId);
+    if (mobile) setSidebarOpen(false);
     const crew = crews.find(c => c.crew.id === crewId);
     if (crew?.last_position) setFlyTo({ lat: crew.last_position.lat, lng: crew.last_position.lng });
     else if (tracks[crewId]?.length > 0) {
@@ -205,10 +216,6 @@ export default function Dashboard() {
   const selCrew = crews.find(c => c.crew.id === selected);
   const selTrack = matchedTracks[selected] || tracks[selected]?.map(p => [p.lat, p.lng]) || [];
   const selStops = stops[selected] || [];
-
-  // Определяем последнюю точку остановки (активную — без duration_minutes или самую новую)
-  const lastStop = selStops.length > 0 ? selStops[selStops.length - 1] : null;
-  const isLastStopActive = lastStop && !lastStop.duration_minutes;
 
   const getCrewStats = (crewId) => {
     if (archiveTab && archiveStats[crewId]) return archiveStats[crewId];
@@ -226,8 +233,7 @@ export default function Dashboard() {
         const stopsRes = await axios.get(`${API}/stops/${archiveCrew}`, { params: { shift_date: archiveDate } });
         stopRows = stopsRes.data.map(st => ({
           'Экипаж': res.data.find(s => s.crew_id === archiveCrew)?.crews?.name || '',
-          'Метка': st.point_label,
-          'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
+          'Метка': st.point_label, 'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
           'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
           'Длительность (мин)': st.duration_minutes || '',
         }));
@@ -271,82 +277,122 @@ export default function Dashboard() {
   const totalCost = archiveTab ? Object.values(archiveStats).reduce((s, c) => s + c.fuel_cost, 0) : crews.reduce((s, c) => s + (c.total_cost || 0), 0);
   const activeCount = crews.filter(c => c.shifts?.some(s => s.status === 'active')).length;
 
+  const sidebarW = mobile ? '100%' : 280;
+
   return (
-    <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-      {/* Левая панель */}
-      <div style={{ width: 280, flexShrink: 0, background: '#0E1117', borderRight: '1px solid #2A2F42', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ padding: '12px', borderBottom: '1px solid #2A2F42' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+    <div style={{ display: 'flex', flex: 1, overflow: 'hidden', flexDirection: mobile ? 'column' : 'row', height: '100vh' }}>
+
+      {/* Мобильный хедер */}
+      {mobile && (
+        <div style={{ background: '#0E1117', borderBottom: '1px solid #2A2F42', padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 6 }}>
             {[
-              { label: 'АКТИВНЫХ', value: archiveTab ? '—' : `${activeCount}/${crews.length}`, color: '#3B82F6' },
-              { label: 'ПРОБЕГ', value: `${totalKm.toFixed(1)} км`, color: '#F1F5F9' },
-              { label: 'РАСХОД', value: `${totalFuel.toFixed(1)} л`, color: '#F59E0B' },
-              { label: 'СТОИМОСТЬ', value: `${totalCost.toFixed(0)} ₸`, color: '#F59E0B' },
+              { label: `${activeCount}/${crews.length}`, sub: 'актив', color: '#3B82F6' },
+              { label: `${totalKm.toFixed(0)} км`, sub: 'пробег', color: '#F1F5F9' },
+              { label: `${totalCost.toFixed(0)} ₸`, sub: 'стоим', color: '#F59E0B' },
             ].map((k, i) => (
-              <div key={i} style={{ background: '#151820', borderRadius: 8, padding: '8px 10px', border: '1px solid #2A2F42' }}>
-                <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.08em' }}>{k.label}</div>
-                <div style={{ color: k.color, fontSize: 16, fontWeight: 800, marginTop: 2 }}>{k.value}</div>
+              <div key={i} style={{ background: '#151820', borderRadius: 6, padding: '4px 8px', border: '1px solid #2A2F42', textAlign: 'center' }}>
+                <div style={{ color: k.color, fontSize: 12, fontWeight: 800 }}>{k.label}</div>
+                <div style={{ color: '#475569', fontSize: 8 }}>{k.sub}</div>
               </div>
             ))}
           </div>
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{
+            padding: '6px 12px', borderRadius: 7, background: sidebarOpen ? '#1D3A6E' : '#151820',
+            border: `1px solid ${sidebarOpen ? '#3B82F6' : '#2A2F42'}`,
+            color: sidebarOpen ? '#3B82F6' : '#475569', fontSize: 11, cursor: 'pointer'
+          }}>
+            {sidebarOpen ? '✕ Закрыть' : '☰ Экипажи'}
+          </button>
         </div>
+      )}
 
-        <div style={{ flex: 1, overflow: 'auto', padding: 10 }}>
-          <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8 }}>ЭКИПАЖИ · {crews.length}</div>
-          {crews.map(c => {
-            const crewStatus = archiveTab ? 'offline' : (c.shifts?.find(s => ['active','break','tech'].includes(s.status))?.status || 'offline');
-            const stats = getCrewStats(c.crew.id);
-            const memberCount = c.crew.crew_members?.length || 0;
-            const onlineCount = c.shifts?.length || 0;
-            const incomplete = !archiveTab && onlineCount > 0 && onlineCount < memberCount;
-            return (
-              <div key={c.crew.id} onClick={() => handleSelectCrew(c.crew.id)} style={{
-                padding: '9px 11px', borderRadius: 9, cursor: 'pointer', marginBottom: 6,
-                background: selected === c.crew.id ? '#1C2030' : '#151820',
-                border: `1px solid ${selected === c.crew.id ? (c.crew.color || '#3B82F6') + '66' : '#2A2F42'}`,
-                transition: 'all 0.15s'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
-                  <div style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: c.crew.color || '#3B82F6', boxShadow: crewStatus === 'active' ? `0 0 6px ${c.crew.color}` : 'none' }} />
-                  <span style={{ color: '#F1F5F9', fontSize: 12, fontWeight: 700 }}>«{c.crew.name}»</span>
-                  {!archiveTab && <Tag status={crewStatus} />}
-                </div>
-                {incomplete && <div style={{ marginLeft: 16, marginBottom: 3 }}><span style={{ fontSize: 9, color: '#F59E0B', fontWeight: 700 }}>⚠ НЕПОЛНЫЙ СОСТАВ {onlineCount}/{memberCount}</span></div>}
-                <div style={{ color: '#475569', fontSize: 10, paddingLeft: 16 }}>{c.crew.car_brand} {c.crew.car_model} · {stats.total_km.toFixed(1)} км</div>
+      {/* Сайдбар */}
+      {(sidebarOpen || !mobile) && (
+        <div style={{
+          width: sidebarW, flexShrink: 0, background: '#0E1117',
+          borderRight: mobile ? 'none' : '1px solid #2A2F42',
+          borderBottom: mobile ? '1px solid #2A2F42' : 'none',
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+          maxHeight: mobile ? '50vh' : '100%',
+        }}>
+          {/* KPI — только на десктопе */}
+          {!mobile && (
+            <div style={{ padding: '12px', borderBottom: '1px solid #2A2F42' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                {[
+                  { label: 'АКТИВНЫХ', value: archiveTab ? '—' : `${activeCount}/${crews.length}`, color: '#3B82F6' },
+                  { label: 'ПРОБЕГ', value: `${totalKm.toFixed(1)} км`, color: '#F1F5F9' },
+                  { label: 'РАСХОД', value: `${totalFuel.toFixed(1)} л`, color: '#F59E0B' },
+                  { label: 'СТОИМОСТЬ', value: `${totalCost.toFixed(0)} ₸`, color: '#F59E0B' },
+                ].map((k, i) => (
+                  <div key={i} style={{ background: '#151820', borderRadius: 8, padding: '8px 10px', border: '1px solid #2A2F42' }}>
+                    <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.08em' }}>{k.label}</div>
+                    <div style={{ color: k.color, fontSize: 16, fontWeight: 800, marginTop: 2 }}>{k.value}</div>
+                  </div>
+                ))}
               </div>
-            );
-          })}
-        </div>
-
-        <div style={{ padding: 10, borderTop: '1px solid #2A2F42' }}>
-          <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-            <button onClick={() => setArchiveTab(false)} style={{ flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: !archiveTab ? '#1D3A6E' : 'transparent', border: `1px solid ${!archiveTab ? '#3B82F6' : '#2A2F42'}`, color: !archiveTab ? '#3B82F6' : '#475569' }}>🔴 Live</button>
-            <button onClick={() => setArchiveTab(true)} style={{ flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: archiveTab ? '#1D3A6E' : 'transparent', border: `1px solid ${archiveTab ? '#3B82F6' : '#2A2F42'}`, color: archiveTab ? '#3B82F6' : '#475569' }}>📁 Архив</button>
-          </div>
-          {archiveTab && (
-            <>
-              <input type="date" value={archiveDate} onChange={e => { setArchiveDate(e.target.value); setSelected(null); setTracks({}); setMatchedTracks({}); setStops({}); }}
-                style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }} />
-              <select value={archiveCrew} onChange={e => setArchiveCrew(e.target.value)}
-                style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }}>
-                <option value="">— Все экипажи —</option>
-                {crews.map(c => <option key={c.crew.id} value={c.crew.id}>«{c.crew.name}»</option>)}
-              </select>
-              <button onClick={exportExcel} style={{ width: '100%', padding: '8px', borderRadius: 8, background: '#14532D', border: '1px solid #22C55E44', color: '#22C55E', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>📥 Выгрузить Excel</button>
-            </>
+            </div>
           )}
-        </div>
-      </div>
 
-      {/* Правая часть — карта + нижняя панель */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
+          {/* Список экипажей */}
+          <div style={{ flex: 1, overflow: 'auto', padding: 10 }}>
+            <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', marginBottom: 8 }}>ЭКИПАЖИ · {crews.length}</div>
+            {crews.map(c => {
+              const crewStatus = archiveTab ? 'offline' : (c.shifts?.find(s => ['active','break','tech'].includes(s.status))?.status || 'offline');
+              const stats = getCrewStats(c.crew.id);
+              const memberCount = c.crew.crew_members?.length || 0;
+              const onlineCount = c.shifts?.length || 0;
+              const incomplete = !archiveTab && onlineCount > 0 && onlineCount < memberCount;
+              return (
+                <div key={c.crew.id} onClick={() => handleSelectCrew(c.crew.id)} style={{
+                  padding: '9px 11px', borderRadius: 9, cursor: 'pointer', marginBottom: 6,
+                  background: selected === c.crew.id ? '#1C2030' : '#151820',
+                  border: `1px solid ${selected === c.crew.id ? (c.crew.color || '#3B82F6') + '66' : '#2A2F42'}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 3 }}>
+                    <div style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0, background: c.crew.color || '#3B82F6', boxShadow: crewStatus === 'active' ? `0 0 6px ${c.crew.color}` : 'none' }} />
+                    <span style={{ color: '#F1F5F9', fontSize: 12, fontWeight: 700 }}>«{c.crew.name}»</span>
+                    {!archiveTab && <Tag status={crewStatus} />}
+                  </div>
+                  {incomplete && <div style={{ marginLeft: 16, marginBottom: 3 }}><span style={{ fontSize: 9, color: '#F59E0B', fontWeight: 700 }}>⚠ НЕПОЛНЫЙ {onlineCount}/{memberCount}</span></div>}
+                  <div style={{ color: '#475569', fontSize: 10, paddingLeft: 16 }}>{c.crew.car_brand} {c.crew.car_model} · {stats.total_km.toFixed(1)} км</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Архив */}
+          <div style={{ padding: 10, borderTop: '1px solid #2A2F42' }}>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              <button onClick={() => setArchiveTab(false)} style={{ flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: !archiveTab ? '#1D3A6E' : 'transparent', border: `1px solid ${!archiveTab ? '#3B82F6' : '#2A2F42'}`, color: !archiveTab ? '#3B82F6' : '#475569' }}>🔴 Live</button>
+              <button onClick={() => setArchiveTab(true)} style={{ flex: 1, padding: '6px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: archiveTab ? '#1D3A6E' : 'transparent', border: `1px solid ${archiveTab ? '#3B82F6' : '#2A2F42'}`, color: archiveTab ? '#3B82F6' : '#475569' }}>📁 Архив</button>
+            </div>
+            {archiveTab && (
+              <>
+                <input type="date" value={archiveDate} onChange={e => { setArchiveDate(e.target.value); setSelected(null); setTracks({}); setMatchedTracks({}); setStops({}); }}
+                  style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }} />
+                <select value={archiveCrew} onChange={e => setArchiveCrew(e.target.value)}
+                  style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }}>
+                  <option value="">— Все экипажи —</option>
+                  {crews.map(c => <option key={c.crew.id} value={c.crew.id}>«{c.crew.name}»</option>)}
+                </select>
+                <button onClick={exportExcel} style={{ width: '100%', padding: '8px', borderRadius: 8, background: '#14532D', border: '1px solid #22C55E44', color: '#22C55E', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>📥 Excel</button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Карта + нижняя панель */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', minHeight: 0 }}>
         {matchingLoading && (
           <div style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, background: '#0E1117', border: '1px solid #2A2F42', borderRadius: 8, padding: '6px 14px', fontSize: 11, color: '#94A3B8' }}>
             🗺 Привязка к дорогам...
           </div>
         )}
 
-        {/* Карта */}
         <div style={{ flex: 1, minHeight: 0 }}>
           <MapContainer center={[48.0, 68.0]} zoom={5} style={{ height: '100%', width: '100%' }} zoomControl={true}>
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='© OpenStreetMap' />
@@ -357,11 +403,10 @@ export default function Dashboard() {
               return (
                 <Marker key={c.crew.id} position={[c.last_position.lat, c.last_position.lng]} icon={crewIcon(c.crew.color || '#3B82F6')}>
                   <Popup>
-                    <div style={{ fontFamily: 'Inter, sans-serif', minWidth: 160 }}>
-                      <div style={{ fontWeight: 700, marginBottom: 4 }}>«{c.crew.name}»</div>
+                    <div style={{ fontFamily: 'Inter, sans-serif', minWidth: 140 }}>
+                      <div style={{ fontWeight: 700 }}>«{c.crew.name}»</div>
                       <div style={{ fontSize: 12, color: '#666' }}>{c.crew.car_brand} {c.crew.car_model}</div>
                       <div style={{ fontSize: 12, marginTop: 4 }}>Пробег: {stats.total_km.toFixed(1)} км</div>
-                      <div style={{ fontSize: 12 }}>Расход: {stats.fuel_used.toFixed(1)} л</div>
                     </div>
                   </Popup>
                 </Marker>
@@ -373,7 +418,7 @@ export default function Dashboard() {
                 <Popup>
                   <div style={{ fontFamily: 'Inter, sans-serif' }}>
                     <div style={{ fontWeight: 700 }}>Точка {stop.point_label}</div>
-                    <div style={{ fontSize: 12, marginTop: 4 }}>{stop.address || 'Адрес определяется'}</div>
+                    <div style={{ fontSize: 12, marginTop: 4 }}>{stop.address || 'Адрес...'}</div>
                     <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
                       {new Date(stop.arrived_at).toLocaleTimeString()}
                       {stop.duration_minutes ? ` · ${stop.duration_minutes} мин` : ''}
@@ -385,50 +430,46 @@ export default function Dashboard() {
           </MapContainer>
         </div>
 
-        {/* Нижняя панель с ползунком */}
+        {/* Нижняя панель */}
         {selCrew && (
-          <div style={{ background: '#0E1117', borderTop: '1px solid #2A2F42', flexShrink: 0, height: panelHeight, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ background: '#0E1117', borderTop: '1px solid #2A2F42', flexShrink: 0, height: mobile ? 'auto' : panelHeight, maxHeight: mobile ? '45vh' : undefined, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-            {/* Ползунок — тянуть вверх/вниз */}
-            <div
-              ref={dragRef}
-              onMouseDown={onDragStart}
-              onTouchStart={onDragStart}
-              style={{ height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'ns-resize', flexShrink: 0, borderBottom: '1px solid #2A2F42', userSelect: 'none' }}
-            >
-              <div style={{ width: 40, height: 4, borderRadius: 2, background: '#2A2F42' }} />
-            </div>
+            {/* Ползунок — только на десктопе */}
+            {!mobile && (
+              <div onMouseDown={onDragStart} onTouchStart={onDragStart}
+                style={{ height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'ns-resize', flexShrink: 0, borderBottom: '1px solid #2A2F42', userSelect: 'none' }}>
+                <div style={{ width: 40, height: 4, borderRadius: 2, background: '#2A2F42' }} />
+              </div>
+            )}
 
-            <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px' }}>
-              {/* Заголовок */}
+            <div style={{ flex: 1, overflow: 'auto', padding: mobile ? '8px 10px' : '8px 16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span style={{ color: '#F1F5F9', fontWeight: 800, fontSize: 14 }}>«{selCrew.crew.name}»</span>
-                  <span style={{ color: '#475569', fontSize: 12 }}>{selCrew.crew.car_brand} {selCrew.crew.car_model}</span>
-                  {matchingLoading && <span style={{ color: '#475569', fontSize: 10 }}>привязка...</span>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ color: '#F1F5F9', fontWeight: 800, fontSize: mobile ? 13 : 14 }}>«{selCrew.crew.name}»</span>
+                  <span style={{ color: '#475569', fontSize: 11 }}>{selCrew.crew.car_brand} {selCrew.crew.car_model}</span>
                 </div>
                 <button onClick={() => { setSelected(null); setFlyTo(null); }} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
               </div>
 
               {/* KPI */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: mobile ? 6 : 8, marginBottom: 10 }}>
                 {(() => {
                   const stats = getCrewStats(selCrew.crew.id);
                   return [
                     { label: 'ПРОБЕГ', value: `${stats.total_km.toFixed(1)} км`, color: '#3B82F6' },
                     { label: 'РАСХОД', value: `${stats.fuel_used.toFixed(1)} л`, color: '#F59E0B' },
-                    { label: 'СТОИМОСТЬ', value: `${stats.fuel_cost.toFixed(0)} ₸`, color: '#F59E0B' },
+                    { label: 'СТОИМ', value: `${stats.fuel_cost.toFixed(0)} ₸`, color: '#F59E0B' },
                     { label: 'ТОЧЕК', value: selStops.length, color: '#22C55E' },
                   ].map((s, i) => (
-                    <div key={i} style={{ background: '#151820', borderRadius: 8, padding: '8px 12px', border: '1px solid #2A2F42' }}>
-                      <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.08em' }}>{s.label}</div>
-                      <div style={{ color: s.color, fontSize: 18, fontWeight: 800, marginTop: 2 }}>{s.value}</div>
+                    <div key={i} style={{ background: '#151820', borderRadius: 7, padding: mobile ? '6px 8px' : '8px 12px', border: '1px solid #2A2F42' }}>
+                      <div style={{ color: '#475569', fontSize: 8, fontWeight: 700, letterSpacing: '0.06em' }}>{s.label}</div>
+                      <div style={{ color: s.color, fontSize: mobile ? 14 : 18, fontWeight: 800, marginTop: 2 }}>{s.value}</div>
                     </div>
                   ));
                 })()}
               </div>
 
-              {/* Точки остановок */}
+              {/* Точки */}
               {selStops.length > 0 && (
                 <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
                   {selStops.map((stop, i) => {
@@ -437,8 +478,7 @@ export default function Dashboard() {
                     return (
                       <div key={i} style={{
                         flexShrink: 0, background: '#151820', borderRadius: 8, padding: '6px 10px',
-                        border: `1px solid ${isActive ? '#F59E0B44' : '#2A2F42'}`,
-                        minWidth: 120
+                        border: `1px solid ${isActive ? '#F59E0B44' : '#2A2F42'}`, minWidth: 110
                       }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
                           <div style={{ width: 18, height: 18, borderRadius: 4, background: isActive ? '#F59E0B22' : '#1D3A6E', border: `1px solid ${isActive ? '#F59E0B44' : '#3B82F644'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: isActive ? '#F59E0B' : '#3B82F6' }}>{stop.point_label}</div>
@@ -447,9 +487,7 @@ export default function Dashboard() {
                         <div style={{ color: '#94A3B8', fontSize: 10, marginBottom: 2 }}>{stop.address || `${stop.lat.toFixed(4)}, ${stop.lng.toFixed(4)}`}</div>
                         {stop.duration_minutes
                           ? <div style={{ color: '#F59E0B', fontSize: 9 }}>{stop.duration_minutes} мин</div>
-                          : isActive
-                            ? <StopTimer arrivedAt={stop.arrived_at} />
-                            : null
+                          : isActive ? <StopTimer arrivedAt={stop.arrived_at} /> : null
                         }
                       </div>
                     );

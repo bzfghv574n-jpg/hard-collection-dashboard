@@ -230,23 +230,105 @@ export default function Dashboard() {
       const res = await axios.get(`${API}/reports/summary`, {
         params: { date_from: archiveDate, date_to: archiveDateTo, ...(archiveCrew ? { crew_id: archiveCrew } : {}) }
       });
-      let stopRows = [];
-      if (archiveCrew) {
-        const stopsRes = await axios.get(`${API}/stops/${archiveCrew}`, { params: { shift_date: archiveDate } });
-        stopRows = stopsRes.data.map(st => ({
-          'Экипаж': res.data.find(s => s.crew_id === archiveCrew)?.crews?.name || '',
-          'Метка': st.point_label, 'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
-          'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
-          'Длительность (мин)': st.duration_minutes || '',
+      const shifts = res.data;
+
+      // ── ЛИСТ 1: Сводка по экипажам ──────────────────────────────
+      const crewMap = {};
+      for (const s of shifts) {
+        const cid = s.crew_id;
+        if (!crewMap[cid]) {
+          crewMap[cid] = {
+            name: s.crews?.name || '',
+            auto: `${s.crews?.car_brand || ''} ${s.crews?.car_model || ''}`.trim(),
+            days: new Set(),
+            total_km: 0, fuel_used: 0, fuel_cost: 0,
+          };
+        }
+        crewMap[cid].days.add(s.date);
+        crewMap[cid].total_km += parseFloat(s.total_km || 0);
+        crewMap[cid].fuel_used += parseFloat(s.fuel_used || 0);
+        crewMap[cid].fuel_cost += parseFloat(s.fuel_cost || 0);
+      }
+
+      const summaryRows = Object.values(crewMap).map(c => ({
+        'Экипаж': c.name,
+        'Авто': c.auto,
+        'Период': `${archiveDate} — ${archiveDateTo}`,
+        'Дней работы': c.days.size,
+        'Пробег (км)': c.total_km.toFixed(2),
+        'Расход (л)': c.fuel_used.toFixed(2),
+        'Стоимость (₸)': Math.round(c.fuel_cost),
+      }));
+
+      // Итоговая строка
+      summaryRows.push({
+        'Экипаж': 'ИТОГО',
+        'Авто': '',
+        'Период': '',
+        'Дней работы': '',
+        'Пробег (км)': Object.values(crewMap).reduce((s, c) => s + c.total_km, 0).toFixed(2),
+        'Расход (л)': Object.values(crewMap).reduce((s, c) => s + c.fuel_used, 0).toFixed(2),
+        'Стоимость (₸)': Math.round(Object.values(crewMap).reduce((s, c) => s + c.fuel_cost, 0)),
+      });
+
+      // ── ЛИСТ 2: По дням ─────────────────────────────────────────
+      // Группируем смены по дате+экипажу (суммируем если несколько сотрудников)
+      const dayMap = {};
+      for (const s of shifts) {
+        const key = `${s.date}_${s.crew_id}`;
+        if (!dayMap[key]) {
+          dayMap[key] = {
+            date: s.date,
+            crew: s.crews?.name || '',
+            auto: `${s.crews?.car_brand || ''} ${s.crews?.car_model || ''}`.trim(),
+            employees: [],
+            started_at: s.started_at,
+            ended_at: s.ended_at,
+            total_km: 0, fuel_used: 0, fuel_cost: 0,
+          };
+        }
+        if (s.employees?.full_name) dayMap[key].employees.push(s.employees.full_name);
+        dayMap[key].total_km += parseFloat(s.total_km || 0);
+        dayMap[key].fuel_used += parseFloat(s.fuel_used || 0);
+        dayMap[key].fuel_cost += parseFloat(s.fuel_cost || 0);
+        if (s.started_at && (!dayMap[key].started_at || s.started_at < dayMap[key].started_at)) {
+          dayMap[key].started_at = s.started_at;
+        }
+        if (s.ended_at && s.ended_at > (dayMap[key].ended_at || '')) {
+          dayMap[key].ended_at = s.ended_at;
+        }
+      }
+
+      const dayRows = Object.values(dayMap)
+        .sort((a, b) => a.date.localeCompare(b.date) || a.crew.localeCompare(b.crew))
+        .map(d => ({
+          'Дата': d.date,
+          'Экипаж': d.crew,
+          'Авто': d.auto,
+          'Сотрудники': [...new Set(d.employees)].join(', '),
+          'Начало': d.started_at ? new Date(d.started_at).toLocaleTimeString() : '',
+          'Конец': d.ended_at ? new Date(d.ended_at).toLocaleTimeString() : '',
+          'Пробег (км)': d.total_km.toFixed(2),
+          'Расход (л)': d.fuel_used.toFixed(2),
+          'Стоимость (₸)': Math.round(d.fuel_cost),
         }));
-      } else {
-        const crewIds = [...new Set(res.data.map(s => s.crew_id))];
-        for (const cid of crewIds) {
-          const crewName = res.data.find(s => s.crew_id === cid)?.crews?.name || '';
+
+      // ── ЛИСТ 3: Точки остановок ─────────────────────────────────
+      let stopRows = [];
+      const crewIds = archiveCrew ? [archiveCrew] : [...new Set(shifts.map(s => s.crew_id))];
+      for (const cid of crewIds) {
+        const crewName = crewMap[cid]?.name || '';
+        // Берём точки за каждый день периода
+        const days = archiveCrew
+          ? [...(crewMap[cid]?.days || [])]
+          : [...new Set(shifts.filter(s => s.crew_id === cid).map(s => s.date))];
+        for (const day of days.sort()) {
           try {
-            const stopsRes = await axios.get(`${API}/stops/${cid}`, { params: { shift_date: archiveDate } });
+            const stopsRes = await axios.get(`${API}/stops/${cid}`, { params: { shift_date: day } });
             stopsRes.data.forEach(st => stopRows.push({
-              'Экипаж': crewName, 'Метка': st.point_label,
+              'Дата': day,
+              'Экипаж': crewName,
+              'Метка': st.point_label,
               'Адрес': st.address || `${st.lat.toFixed(4)}, ${st.lng.toFixed(4)}`,
               'Время прибытия': new Date(st.arrived_at).toLocaleTimeString(),
               'Длительность (мин)': st.duration_minutes || '',
@@ -254,24 +336,27 @@ export default function Dashboard() {
           } catch(e) {}
         }
       }
-      const rows = res.data.map(s => ({
-        'Дата': s.date, 'Экипаж': s.crews?.name || '',
-        'Авто': `${s.crews?.car_brand || ''} ${s.crews?.car_model || ''}`,
-        'Сотрудник': s.employees?.full_name || '',
-        'Начало смены': s.started_at ? new Date(s.started_at).toLocaleTimeString() : '',
-        'Конец смены': s.ended_at ? new Date(s.ended_at).toLocaleTimeString() : '',
-        'Пробег (км)': parseFloat(s.total_km || 0).toFixed(2),
-        'Расход (л)': parseFloat(s.fuel_used || 0).toFixed(2),
-        'Стоимость (₸)': parseFloat(s.fuel_cost || 0).toFixed(0),
-      }));
-      const ws1 = XLSX.utils.json_to_sheet(rows);
-      const ws2 = XLSX.utils.json_to_sheet(stopRows);
+
+      // ── Создаём Excel ───────────────────────────────────────────
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws1, 'Смены');
-      XLSX.utils.book_append_sheet(wb, ws2, 'Точки остановок');
+
+      const ws1 = XLSX.utils.json_to_sheet(summaryRows);
+      ws1['!cols'] = [20,20,24,14,14,12,16].map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws1, 'Сводка');
+
+      const ws2 = XLSX.utils.json_to_sheet(dayRows);
+      ws2['!cols'] = [12,14,16,24,10,10,13,12,15].map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws2, 'По дням');
+
+      if (stopRows.length > 0) {
+        const ws3 = XLSX.utils.json_to_sheet(stopRows);
+        ws3['!cols'] = [12,14,8,30,14,16].map(w => ({ wch: w }));
+        XLSX.utils.book_append_sheet(wb, ws3, 'Точки остановок');
+      }
+
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      saveAs(new Blob([buf]), `hard_collection_${archiveDate}_${archiveDateTo}_${archiveCrew ? archiveCrew.slice(0,8) : 'all'}.xlsx`);
-    } catch(e) { alert('Ошибка выгрузки'); }
+      saveAs(new Blob([buf]), `hard_collection_${archiveDate}_${archiveDateTo}.xlsx`);
+    } catch(e) { alert('Ошибка выгрузки: ' + e.message); }
   };
 
   const totalKm = archiveTab ? Object.values(archiveStats).reduce((s, c) => s + c.total_km, 0) : crews.reduce((s, c) => s + (c.total_km || 0), 0);

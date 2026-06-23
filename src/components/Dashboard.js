@@ -63,20 +63,72 @@ function StopTimer({ arrivedAt }) {
   return <span style={{ color: '#F59E0B', fontSize: 9, fontWeight: 700 }}>⏱ {elapsed}</span>;
 }
 
-// Фильтрация GPS шума — убираем точки ближе 20м
-function filterTrackPoints(points) {
+const OSRM = 'https://router.project-osrm.org/match/v1/driving';
+
+function haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// Фильтрация GPS шума — убираем точки ближе MIN_DIST метров
+function filterTrackPoints(points, minDist = 50) {
   if (points.length < 2) return points;
   const result = [points[0]];
   for (let i = 1; i < points.length; i++) {
     const prev = result[result.length - 1];
-    const R = 6371000;
-    const dLat = (points[i].lat - prev.lat) * Math.PI / 180;
-    const dLng = (points[i].lng - prev.lng) * Math.PI / 180;
-    const a = Math.sin(dLat/2)**2 + Math.cos(prev.lat*Math.PI/180)*Math.cos(points[i].lat*Math.PI/180)*Math.sin(dLng/2)**2;
-    const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    if (dist >= 20) result.push(points[i]);
+    if (haversineM(prev.lat, prev.lng, points[i].lat, points[i].lng) >= minDist) {
+      result.push(points[i]);
+    }
   }
   return result;
+}
+
+async function matchToRoads(points) {
+  if (points.length < 2) return points.map(p => [p.lat, p.lng]);
+
+  // Фильтруем — минимум 50м между точками
+  const filtered = filterTrackPoints(points, 50);
+  if (filtered.length < 2) return points.map(p => [p.lat, p.lng]);
+
+  const CHUNK = 80;
+  let result = [];
+
+  for (let i = 0; i < filtered.length; i += CHUNK) {
+    const start = i === 0 ? 0 : i - 1;
+    const chunk = filtered.slice(start, Math.min(start + CHUNK, filtered.length));
+
+    if (chunk.length < 2) {
+      if (i > 0) result = result.concat(chunk.slice(1).map(p => [p.lat, p.lng]));
+      else result = result.concat(chunk.map(p => [p.lat, p.lng]));
+      continue;
+    }
+
+    const coords = chunk.map(p => `${p.lng},${p.lat}`).join(';');
+    try {
+      const res = await axios.get(`${OSRM}/${coords}`, {
+        params: {
+          overview: 'full',
+          geometries: 'geojson',
+          radiuses: chunk.map(() => 50).join(';'),
+        },
+        timeout: 10000
+      });
+      if (res.data.matchings?.length > 0) {
+        const geo = res.data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+        result = result.concat(i === 0 ? geo : geo.slice(1));
+      } else {
+        result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));
+      }
+    } catch (e) {
+      // Fallback — прямые линии для этого чанка
+      result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));
+    }
+  }
+
+  return result.length > 1 ? result : filtered.map(p => [p.lat, p.lng]);
 }
 
 export default function Dashboard() {
@@ -94,6 +146,7 @@ export default function Dashboard() {
   const [archiveStats, setArchiveStats] = useState({});
   const [archiveViewDate, setArchiveViewDate] = useState(new Date().toISOString().slice(0,10));
   const [flyTo, setFlyTo] = useState(null);
+  const [matchingLoading, setMatchingLoading] = useState(false);
 
   const [panelHeight, setPanelHeight] = useState(180);
   const isDragging = useRef(false);
@@ -153,10 +206,11 @@ export default function Dashboard() {
         const rawTrack = trackRes.data;
         setTracks(t => ({ ...t, [selected]: rawTrack }));
         setStops(s => ({ ...s, [selected]: stopRes.data }));
-        // Фильтруем шум и рисуем прямыми линиями — надёжно без внешних API
         if (rawTrack.length >= 2) {
-          const filtered = filterTrackPoints(rawTrack);
-          setMatchedTracks(m => ({ ...m, [selected]: filtered.map(p => [p.lat, p.lng]) }));
+          setMatchingLoading(true);
+          const matched = await matchToRoads(rawTrack);
+          setMatchedTracks(m => ({ ...m, [selected]: matched }));
+          setMatchingLoading(false);
         }
       } catch(e) { setMatchingLoading(false); }
     };
@@ -481,6 +535,11 @@ export default function Dashboard() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', minHeight: 0 }}>
 
 
+        {matchingLoading && (
+          <div style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1000, background: '#0E1117', border: '1px solid #2A2F42', borderRadius: 8, padding: '6px 14px', fontSize: 11, color: '#94A3B8' }}>
+            🗺 Привязка к дорогам...
+          </div>
+        )}
         <div style={{ flex: 1, minHeight: 0 }}>
           <MapContainer center={[48.0, 68.0]} zoom={5} style={{ height: '100%', width: '100%' }} zoomControl={true}>
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='© OpenStreetMap' />

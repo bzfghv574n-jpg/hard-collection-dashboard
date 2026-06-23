@@ -63,27 +63,61 @@ function StopTimer({ arrivedAt }) {
   return <span style={{ color: '#F59E0B', fontSize: 9, fontWeight: 700 }}>⏱ {elapsed}</span>;
 }
 
+function haversineM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function filterPoints(points) {
+  if (points.length < 2) return points;
+  // Убираем точки ближе 30м друг к другу — шум GPS при стоянке
+  const filtered = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const prev = filtered[filtered.length - 1];
+    const dist = haversineM(prev.lat, prev.lng, points[i].lat, points[i].lng);
+    if (dist >= 30) filtered.push(points[i]);
+  }
+  return filtered;
+}
+
 async function matchToRoads(points) {
   if (points.length < 2) return points.map(p => [p.lat, p.lng]);
+
+  // Фильтруем шумные точки перед отправкой в OSRM
+  const filtered = filterPoints(points);
+  if (filtered.length < 2) return points.map(p => [p.lat, p.lng]);
+
   try {
     const CHUNK = 90;
     let result = [];
-    for (let i = 0; i < points.length; i += CHUNK) {
-      const chunk = points.slice(i, i + CHUNK);
+    for (let i = 0; i < filtered.length; i += CHUNK) {
+      const chunk = filtered.slice(i, i + CHUNK);
+      if (chunk.length < 2) {
+        result = result.concat(chunk.map(p => [p.lat, p.lng]));
+        continue;
+      }
       const coords = chunk.map(p => `${p.lng},${p.lat}`).join(';');
-      const res = await axios.get(`${OSRM}/${coords}`, {
-        params: { overview: 'full', geometries: 'geojson', radiuses: chunk.map(() => 25).join(';') },
-        timeout: 8000
-      });
-      if (res.data.matchings?.length > 0) {
-        result = result.concat(res.data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]));
-      } else {
+      try {
+        const res = await axios.get(`${OSRM}/${coords}`, {
+          params: { overview: 'full', geometries: 'geojson', radiuses: chunk.map(() => 50).join(';') },
+          timeout: 8000
+        });
+        if (res.data.matchings?.length > 0) {
+          result = result.concat(res.data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]));
+        } else {
+          result = result.concat(chunk.map(p => [p.lat, p.lng]));
+        }
+      } catch (e) {
+        // Если чанк не прошёл — рисуем прямыми линиями
         result = result.concat(chunk.map(p => [p.lat, p.lng]));
       }
     }
-    return result;
+    return result.length > 1 ? result : filtered.map(p => [p.lat, p.lng]);
   } catch (e) {
-    return points.map(p => [p.lat, p.lng]);
+    return filtered.map(p => [p.lat, p.lng]);
   }
 }
 

@@ -579,31 +579,43 @@ export default function Dashboard() {
                 })()}
               </div>
 
-              {/* Точки */}
-              {selStops.length > 0 && (
-                <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
-                  {selStops.map((stop, i) => {
-                    const isLast = i === selStops.length - 1;
-                    const isActive = isLast && !stop.duration_minutes && !archiveTab;
-                    return (
-                      <div key={i} style={{
-                        flexShrink: 0, background: '#151820', borderRadius: 8, padding: '6px 10px',
-                        border: `1px solid ${isActive ? '#F59E0B44' : '#2A2F42'}`, minWidth: 110
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
-                          <div style={{ width: 18, height: 18, borderRadius: 4, background: isActive ? '#F59E0B22' : '#1D3A6E', border: `1px solid ${isActive ? '#F59E0B44' : '#3B82F644'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: isActive ? '#F59E0B' : '#3B82F6' }}>{stop.point_label}</div>
-                          <span style={{ color: '#475569', fontSize: 10 }}>{new Date(stop.arrived_at).toLocaleTimeString()}</span>
+              {/* Точки — дедупликация по координатам+время */}
+              {selStops.length > 0 && (() => {
+                // Убираем дубли: если координаты совпадают с точностью 3 знака и время прибытия одинаковое
+                const seen = new Set();
+                const uniqueStops = selStops.filter(stop => {
+                  const key = `${stop.lat.toFixed(3)}_${stop.lng.toFixed(3)}_${stop.arrived_at}`;
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                });
+                return (
+                  <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+                    {uniqueStops.map((stop, i) => {
+                      const isLast = i === uniqueStops.length - 1;
+                      const isActive = isLast && !stop.duration_minutes && !archiveTab;
+                      return (
+                        <div key={stop.id || i} style={{
+                          flexShrink: 0, background: '#151820', borderRadius: 8, padding: '6px 10px',
+                          border: `1px solid ${isActive ? '#F59E0B44' : '#2A2F42'}`, minWidth: 120
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 3 }}>
+                            <div style={{ width: 18, height: 18, borderRadius: 4, background: isActive ? '#F59E0B22' : '#1D3A6E', border: `1px solid ${isActive ? '#F59E0B44' : '#3B82F644'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 8, fontWeight: 800, color: isActive ? '#F59E0B' : '#3B82F6' }}>{stop.point_label}</div>
+                            <span style={{ color: '#475569', fontSize: 10 }}>{new Date(stop.arrived_at).toLocaleTimeString()}</span>
+                          </div>
+                          <div style={{ color: '#94A3B8', fontSize: 10, marginBottom: 3 }}>{stop.address || `${stop.lat.toFixed(4)}, ${stop.lng.toFixed(4)}`}</div>
+                          {stop.duration_minutes
+                            ? <div style={{ color: '#475569', fontSize: 9 }}>🕐 {stop.duration_minutes} мин</div>
+                            : isActive
+                              ? <div style={{ marginTop: 2 }}><StopTimer arrivedAt={stop.arrived_at} /></div>
+                              : null
+                          }
                         </div>
-                        <div style={{ color: '#94A3B8', fontSize: 10, marginBottom: 2 }}>{stop.address || `${stop.lat.toFixed(4)}, ${stop.lng.toFixed(4)}`}</div>
-                        {stop.duration_minutes
-                          ? <div style={{ color: '#F59E0B', fontSize: 9 }}>{stop.duration_minutes} мин</div>
-                          : isActive ? <StopTimer arrivedAt={stop.arrived_at} /> : null
-                        }
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}

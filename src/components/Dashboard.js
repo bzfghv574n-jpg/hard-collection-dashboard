@@ -373,8 +373,22 @@ export default function Dashboard() {
             </div>
             {archiveTab && (
               <>
-                <input type="date" value={archiveDate} onChange={e => { setArchiveDate(e.target.value); setSelected(null); setTracks({}); setMatchedTracks({}); setStops({}); }}
-                  style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }} />
+                {/* Период для Excel */}
+                <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', marginBottom: 4 }}>ПЕРИОД ДЛЯ EXCEL</div>
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginBottom: 6 }}>
+                  <input type="date" value={archiveDate} onChange={e => setArchiveDate(e.target.value)}
+                    style={{ flex: 1, background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '5px 6px', color: '#94A3B8', fontSize: 10, boxSizing: 'border-box' }} />
+                  <span style={{ color: '#475569', fontSize: 10, flexShrink: 0 }}>—</span>
+                  <input type="date" value={archiveDateTo} onChange={e => setArchiveDateTo(e.target.value)}
+                    style={{ flex: 1, background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '5px 6px', color: '#94A3B8', fontSize: 10, boxSizing: 'border-box' }} />
+                </div>
+
+                {/* День для просмотра трека */}
+                <div style={{ color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', marginBottom: 4 }}>ДЕНЬ ДЛЯ ТРЕКА НА КАРТЕ</div>
+                <input type="date" value={archiveViewDate} onChange={e => { setArchiveViewDate(e.target.value); setSelected(null); setTracks({}); setMatchedTracks({}); setStops({}); }}
+                  style={{ width: '100%', background: '#151820', border: '1px solid #3B82F644', borderRadius: 7, padding: '6px 8px', color: '#3B82F6', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }} />
+
+                {/* Экипаж */}
                 <select value={archiveCrew} onChange={e => setArchiveCrew(e.target.value)}
                   style={{ width: '100%', background: '#151820', border: '1px solid #2A2F42', borderRadius: 7, padding: '6px 8px', color: '#94A3B8', fontSize: 11, marginBottom: 6, boxSizing: 'border-box' }}>
                   <option value="">— Все экипажи —</option>

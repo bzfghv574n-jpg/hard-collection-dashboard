@@ -86,19 +86,34 @@ function filterPoints(points) {
 async function matchToRoads(points) {
   if (points.length < 2) return points.map(p => [p.lat, p.lng]);
 
-  // Фильтруем шумные точки перед отправкой в OSRM
+  // Фильтруем шумные точки — убираем ближе 50м
   const filtered = filterPoints(points);
-  if (filtered.length < 2) return points.map(p => [p.lat, p.lng]);
+  if (filtered.length < 3) return filtered.map(p => [p.lat, p.lng]);
 
   try {
-    const CHUNK = 90;
+    const CHUNK = 80;
     let result = [];
     for (let i = 0; i < filtered.length; i += CHUNK) {
-      const chunk = filtered.slice(i, i + CHUNK);
-      if (chunk.length < 2) {
+      // Берём чанк с перекрытием — последнюю точку предыдущего чанка добавляем в начало
+      const start = i === 0 ? 0 : i - 1;
+      const chunk = filtered.slice(start, i + CHUNK);
+
+      // Минимум 3 точки для OSRM match
+      if (chunk.length < 3) {
         result = result.concat(chunk.map(p => [p.lat, p.lng]));
         continue;
       }
+
+      // Проверяем что точки достаточно разнесены (суммарное расстояние > 100м)
+      let totalDist = 0;
+      for (let j = 1; j < chunk.length; j++) {
+        totalDist += haversineM(chunk[j-1].lat, chunk[j-1].lng, chunk[j].lat, chunk[j].lng);
+      }
+      if (totalDist < 100) {
+        result = result.concat(chunk.map(p => [p.lat, p.lng]));
+        continue;
+      }
+
       const coords = chunk.map(p => `${p.lng},${p.lat}`).join(';');
       try {
         const res = await axios.get(`${OSRM}/${coords}`, {
@@ -106,13 +121,14 @@ async function matchToRoads(points) {
           timeout: 8000
         });
         if (res.data.matchings?.length > 0) {
-          result = result.concat(res.data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]));
+          const geo = res.data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+          // Не добавляем первую точку если это не первый чанк (избегаем дублей)
+          result = result.concat(i === 0 ? geo : geo.slice(1));
         } else {
-          result = result.concat(chunk.map(p => [p.lat, p.lng]));
+          result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));
         }
       } catch (e) {
-        // Если чанк не прошёл — рисуем прямыми линиями
-        result = result.concat(chunk.map(p => [p.lat, p.lng]));
+        result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));
       }
     }
     return result.length > 1 ? result : filtered.map(p => [p.lat, p.lng]);

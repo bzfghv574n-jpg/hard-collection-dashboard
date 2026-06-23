@@ -97,8 +97,10 @@ export default function Dashboard() {
   const [stops, setStops] = useState({});
   const [archiveTab, setArchiveTab] = useState(false);
   const [archiveDate, setArchiveDate] = useState(new Date().toISOString().slice(0,10));
+  const [archiveDateTo, setArchiveDateTo] = useState(new Date().toISOString().slice(0,10));
   const [archiveCrew, setArchiveCrew] = useState('');
   const [archiveStats, setArchiveStats] = useState({});
+  const [archiveViewDate, setArchiveViewDate] = useState(new Date().toISOString().slice(0,10));
   const [flyTo, setFlyTo] = useState(null);
   const [matchingLoading, setMatchingLoading] = useState(false);
   const [panelHeight, setPanelHeight] = useState(180);
@@ -132,7 +134,7 @@ export default function Dashboard() {
     if (!archiveTab || !crews.length) return;
     const loadArchiveStats = async () => {
       try {
-        const res = await axios.get(`${API}/reports/summary`, { params: { date_from: archiveDate, date_to: archiveDate } });
+        const res = await axios.get(`${API}/reports/summary`, { params: { date_from: archiveDate, date_to: archiveDateTo } });
         const stats = {};
         for (const shift of res.data) {
           const cid = shift.crew_id;
@@ -145,13 +147,13 @@ export default function Dashboard() {
       } catch(e) {}
     };
     loadArchiveStats();
-  }, [archiveTab, archiveDate, crews.length]);
+  }, [archiveTab, archiveDate, archiveDateTo, crews.length]);
 
   useEffect(() => {
     if (!selected) return;
     const loadTrack = async () => {
       try {
-        const date = archiveTab ? archiveDate : new Date().toISOString().slice(0,10);
+        const date = archiveTab ? archiveViewDate : new Date().toISOString().slice(0,10);
         const [trackRes, stopRes] = await Promise.all([
           axios.get(`${API}/gps/track/${selected}`, { params: { shift_date: date } }),
           axios.get(`${API}/stops/${selected}`, { params: { shift_date: date } }),
@@ -172,7 +174,7 @@ export default function Dashboard() {
       const interval = setInterval(loadTrack, 15000);
       return () => clearInterval(interval);
     }
-  }, [selected, archiveTab, archiveDate]);
+  }, [selected, archiveTab, archiveViewDate]);
 
   const onDragStart = (e) => {
     isDragging.current = true;
@@ -226,7 +228,7 @@ export default function Dashboard() {
   const exportExcel = async () => {
     try {
       const res = await axios.get(`${API}/reports/summary`, {
-        params: { date_from: archiveDate, date_to: archiveDate, ...(archiveCrew ? { crew_id: archiveCrew } : {}) }
+        params: { date_from: archiveDate, date_to: archiveDateTo, ...(archiveCrew ? { crew_id: archiveCrew } : {}) }
       });
       let stopRows = [];
       if (archiveCrew) {
@@ -268,7 +270,7 @@ export default function Dashboard() {
       XLSX.utils.book_append_sheet(wb, ws1, 'Смены');
       XLSX.utils.book_append_sheet(wb, ws2, 'Точки остановок');
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      saveAs(new Blob([buf]), `hard_collection_${archiveDate}_${archiveCrew ? archiveCrew.slice(0,8) : 'all'}.xlsx`);
+      saveAs(new Blob([buf]), `hard_collection_${archiveDate}_${archiveDateTo}_${archiveCrew ? archiveCrew.slice(0,8) : 'all'}.xlsx`);
     } catch(e) { alert('Ошибка выгрузки'); }
   };
 
@@ -401,12 +403,21 @@ export default function Dashboard() {
               if (!c.last_position) return null;
               const stats = getCrewStats(c.crew.id);
               return (
-                <Marker key={c.crew.id} position={[c.last_position.lat, c.last_position.lng]} icon={crewIcon(c.crew.color || '#3B82F6')}>
+                <Marker
+                  key={c.crew.id}
+                  position={[c.last_position.lat, c.last_position.lng]}
+                  icon={crewIcon(c.crew.color || '#3B82F6')}
+                  eventHandlers={{ click: () => handleSelectCrew(c.crew.id) }}
+                >
                   <Popup>
                     <div style={{ fontFamily: 'Inter, sans-serif', minWidth: 140 }}>
                       <div style={{ fontWeight: 700 }}>«{c.crew.name}»</div>
                       <div style={{ fontSize: 12, color: '#666' }}>{c.crew.car_brand} {c.crew.car_model}</div>
                       <div style={{ fontSize: 12, marginTop: 4 }}>Пробег: {stats.total_km.toFixed(1)} км</div>
+                      <div style={{ fontSize: 11, color: '#3B82F6', marginTop: 4, cursor: 'pointer' }}
+                        onClick={() => handleSelectCrew(c.crew.id)}>
+                        Показать маршрут →
+                      </div>
                     </div>
                   </Popup>
                 </Marker>

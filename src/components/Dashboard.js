@@ -200,7 +200,7 @@ export default function Dashboard() {
       } catch(e) {}
     };
     load();
-    const interval = setInterval(load, 10000);
+    const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -250,7 +250,7 @@ export default function Dashboard() {
     };
     loadTrack();
     if (!archiveTab) {
-      const interval = setInterval(loadTrack, 15000);
+      const interval = setInterval(loadTrack, 7000);
       return () => clearInterval(interval);
     }
   }, [selected, archiveTab, archiveViewDate]);

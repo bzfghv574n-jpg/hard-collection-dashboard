@@ -179,6 +179,7 @@ export default function Dashboard() {
   const dragStartY = useRef(0);
   const dragStartH = useRef(0);
   const trackLoadingRef = useRef(false);
+  const archiveCrewInitRef = useRef(false);
 
   useEffect(() => {
     const onResize = () => {
@@ -194,9 +195,14 @@ export default function Dashboard() {
       try {
         const res = await axios.get(`${API}/dashboard/live`);
         setCrews(res.data);
-        // Функциональная форма — иначе archiveCrew всегда читается из замыкания
-        // первого рендера и "устанавливается один раз" превращается в "каждые 10с".
-        setArchiveCrew(prev => prev || res.data[0]?.crew?.id || prev);
+        // Ставим экипаж по умолчанию РОВНО один раз (через ref, а не "если
+        // archiveCrew пустой") — иначе явный выбор пользователем "Все экипажи"
+        // (тоже пустая строка) каждые 5с тихо откатывался бы обратно на
+        // первый экипаж следующим циклом опроса.
+        if (!archiveCrewInitRef.current && res.data.length) {
+          archiveCrewInitRef.current = true;
+          setArchiveCrew(res.data[0].crew.id);
+        }
       } catch(e) {}
     };
     load();

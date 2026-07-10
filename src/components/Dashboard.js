@@ -39,7 +39,7 @@ function Tag({ status }) {
 
 function MapController({ flyTo }) {
   const map = useMap();
-  useEffect(() => { if (flyTo) map.flyTo([flyTo.lat, flyTo.lng], 14, { duration: 1.2 }); }, [flyTo]);
+  useEffect(() => { if (flyTo) map.flyTo([flyTo.lat, flyTo.lng], 14, { duration: 1.2 }); }, [flyTo, map]);
   return null;
 }
 
@@ -152,6 +152,7 @@ export default function Dashboard() {
   const isDragging = useRef(false);
   const dragStartY = useRef(0);
   const dragStartH = useRef(0);
+  const trackLoadingRef = useRef(false);
 
   useEffect(() => {
     const onResize = () => {
@@ -167,7 +168,9 @@ export default function Dashboard() {
       try {
         const res = await axios.get(`${API}/dashboard/live`);
         setCrews(res.data);
-        if (!archiveCrew && res.data.length) setArchiveCrew(res.data[0].crew.id);
+        // Функциональная форма — иначе archiveCrew всегда читается из замыкания
+        // первого рендера и "устанавливается один раз" превращается в "каждые 10с".
+        setArchiveCrew(prev => prev || res.data[0]?.crew?.id || prev);
       } catch(e) {}
     };
     load();
@@ -197,6 +200,10 @@ export default function Dashboard() {
   useEffect(() => {
     if (!selected) return;
     const loadTrack = async () => {
+      // Матчинг длинного трека может занять дольше, чем интервал опроса (15с) —
+      // без этой защиты параллельные вызовы накапливаются друг на друга.
+      if (trackLoadingRef.current) return;
+      trackLoadingRef.current = true;
       try {
         const date = archiveTab ? archiveViewDate : new Date().toISOString().slice(0,10);
         const [trackRes, stopRes] = await Promise.all([
@@ -213,6 +220,7 @@ export default function Dashboard() {
           setMatchingLoading(false);
         }
       } catch(e) { setMatchingLoading(false); }
+      finally { trackLoadingRef.current = false; }
     };
     loadTrack();
     if (!archiveTab) {

@@ -133,6 +133,7 @@ export default function AdminPanel() {
   };
 
   const resetPassword = async (employeeId) => {
+    if (!window.confirm('Сбросить пароль сотруднику? Старый пароль перестанет работать.')) return;
     try {
       const res = await axios.post(`${API}/employees/${employeeId}/reset-password`);
       setResetPasswords(p => ({ ...p, [employeeId]: res.data.password }));

@@ -63,7 +63,35 @@ function StopTimer({ arrivedAt }) {
   return <span style={{ color: '#F59E0B', fontSize: 9, fontWeight: 700 }}>⏱ {elapsed}</span>;
 }
 
-const OSRM = 'https://router.project-osrm.org/match/v1/driving';
+const VALHALLA = 'https://valhalla-kz.fly.dev/trace_route';
+
+// Valhalla возвращает геометрию как закodированный polyline (precision 1e6),
+// а не GeoJSON-координаты — декодируем сами (стандартный алгоритм Google polyline).
+function decodePolyline(encoded, precision = 6) {
+  const factor = Math.pow(10, precision);
+  let index = 0, lat = 0, lng = 0;
+  const coordinates = [];
+  while (index < encoded.length) {
+    let shift = 0, result = 0, byte;
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+
+    shift = 0; result = 0;
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+
+    coordinates.push([lat / factor, lng / factor]);
+  }
+  return coordinates;
+}
 
 function haversineM(lat1, lng1, lat2, lng2) {
   const R = 6371000;
@@ -106,18 +134,16 @@ async function matchToRoads(points) {
       continue;
     }
 
-    const coords = chunk.map(p => `${p.lng},${p.lat}`).join(';');
     try {
-      const res = await axios.get(`${OSRM}/${coords}`, {
-        params: {
-          overview: 'full',
-          geometries: 'geojson',
-          radiuses: chunk.map(() => 50).join(';'),
-        },
-        timeout: 10000
-      });
-      if (res.data.matchings?.length > 0) {
-        const geo = res.data.matchings[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+      const res = await axios.post(VALHALLA, {
+        shape: chunk.map(p => ({ lat: p.lat, lon: p.lng })),
+        costing: 'auto',
+        shape_match: 'map_snap',
+      }, { timeout: 10000 });
+
+      const shape = res.data?.trip?.legs?.[0]?.shape;
+      if (shape) {
+        const geo = decodePolyline(shape);
         result = result.concat(i === 0 ? geo : geo.slice(1));
       } else {
         result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));

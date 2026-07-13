@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
@@ -173,6 +173,8 @@ export default function Dashboard() {
   const [archiveViewDate, setArchiveViewDate] = useState(new Date().toISOString().slice(0,10));
   const [flyTo, setFlyTo] = useState(null);
   const [matchingLoading, setMatchingLoading] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const [panelHeight, setPanelHeight] = useState(180);
   const isDragging = useRef(false);
@@ -190,25 +192,31 @@ export default function Dashboard() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const res = await axios.get(`${API}/dashboard/live`);
-        setCrews(res.data);
-        // Ставим экипаж по умолчанию РОВНО один раз (через ref, а не "если
-        // archiveCrew пустой") — иначе явный выбор пользователем "Все экипажи"
-        // (тоже пустая строка) каждые 5с тихо откатывался бы обратно на
-        // первый экипаж следующим циклом опроса.
-        if (!archiveCrewInitRef.current && res.data.length) {
-          archiveCrewInitRef.current = true;
-          setArchiveCrew(res.data[0].crew.id);
-        }
-      } catch(e) {}
-    };
-    load();
-    const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
+  // Раз в час автоматически + кнопка "Обновить" вручную — вместо опроса
+  // каждые 5 сек, который при большом парке машин сильно нагружает и
+  // Supabase (бэкенд), и создаёт видимость "живости", которая всё равно не
+  // нужна при батч-отправке точек с телефонов раз в 10 минут.
+  const load = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/dashboard/live`);
+      setCrews(res.data);
+      // Ставим экипаж по умолчанию РОВНО один раз (через ref, а не "если
+      // archiveCrew пустой") — иначе явный выбор пользователем "Все экипажи"
+      // (тоже пустая строка) тихо откатывался бы обратно на первый экипаж
+      // следующим обновлением.
+      if (!archiveCrewInitRef.current && res.data.length) {
+        archiveCrewInitRef.current = true;
+        setArchiveCrew(res.data[0].crew.id);
+      }
+      setLastUpdated(new Date());
+    } catch(e) {}
   }, []);
+
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 3600000);
+    return () => clearInterval(interval);
+  }, [load]);
 
   useEffect(() => {
     if (!archiveTab || !crews.length) return;
@@ -229,37 +237,48 @@ export default function Dashboard() {
     loadArchiveStats();
   }, [archiveTab, archiveDate, archiveDateTo, crews.length]);
 
+  const loadTrack = useCallback(async () => {
+    if (!selected) return;
+    // Матчинг длинного трека может занять дольше, чем интервал опроса —
+    // без этой защиты параллельные вызовы накапливаются друг на друга.
+    if (trackLoadingRef.current) return;
+    trackLoadingRef.current = true;
+    try {
+      const date = archiveTab ? archiveViewDate : new Date().toISOString().slice(0,10);
+      const [trackRes, stopRes] = await Promise.all([
+        axios.get(`${API}/gps/track/${selected}`, { params: { shift_date: date } }),
+        axios.get(`${API}/stops/${selected}`, { params: { shift_date: date } }),
+      ]);
+      const rawTrack = trackRes.data;
+      setTracks(t => ({ ...t, [selected]: rawTrack }));
+      setStops(s => ({ ...s, [selected]: stopRes.data }));
+      if (rawTrack.length >= 2) {
+        setMatchingLoading(true);
+        const matched = await matchToRoads(rawTrack);
+        setMatchedTracks(m => ({ ...m, [selected]: matched }));
+        setMatchingLoading(false);
+      }
+    } catch(e) { setMatchingLoading(false); }
+    finally { trackLoadingRef.current = false; }
+  }, [selected, archiveTab, archiveViewDate]);
+
   useEffect(() => {
     if (!selected) return;
-    const loadTrack = async () => {
-      // Матчинг длинного трека может занять дольше, чем интервал опроса (15с) —
-      // без этой защиты параллельные вызовы накапливаются друг на друга.
-      if (trackLoadingRef.current) return;
-      trackLoadingRef.current = true;
-      try {
-        const date = archiveTab ? archiveViewDate : new Date().toISOString().slice(0,10);
-        const [trackRes, stopRes] = await Promise.all([
-          axios.get(`${API}/gps/track/${selected}`, { params: { shift_date: date } }),
-          axios.get(`${API}/stops/${selected}`, { params: { shift_date: date } }),
-        ]);
-        const rawTrack = trackRes.data;
-        setTracks(t => ({ ...t, [selected]: rawTrack }));
-        setStops(s => ({ ...s, [selected]: stopRes.data }));
-        if (rawTrack.length >= 2) {
-          setMatchingLoading(true);
-          const matched = await matchToRoads(rawTrack);
-          setMatchedTracks(m => ({ ...m, [selected]: matched }));
-          setMatchingLoading(false);
-        }
-      } catch(e) { setMatchingLoading(false); }
-      finally { trackLoadingRef.current = false; }
-    };
     loadTrack();
     if (!archiveTab) {
-      const interval = setInterval(loadTrack, 7000);
+      const interval = setInterval(loadTrack, 3600000);
       return () => clearInterval(interval);
     }
-  }, [selected, archiveTab, archiveViewDate]);
+  }, [selected, archiveTab, archiveViewDate, loadTrack]);
+
+  const refreshNow = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([load(), loadTrack()]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   const onDragStart = (e) => {
     isDragging.current = true;
@@ -504,6 +523,15 @@ export default function Dashboard() {
                     <div style={{ color: k.color, fontSize: 16, fontWeight: 800, marginTop: 2 }}>{k.value}</div>
                   </div>
                 ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
+                <span style={{ color: '#475569', fontSize: 10 }}>
+                  {lastUpdated ? `Обновлено в ${lastUpdated.toLocaleTimeString()}` : 'Обновление...'}
+                </span>
+                <button onClick={refreshNow} disabled={refreshing} style={{
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: refreshing ? 'default' : 'pointer',
+                  background: '#151820', border: '1px solid #2A2F42', color: refreshing ? '#475569' : '#3B82F6',
+                }}>{refreshing ? '⟳ ...' : '⟳ Обновить'}</button>
               </div>
             </div>
           )}

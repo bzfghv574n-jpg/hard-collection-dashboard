@@ -191,6 +191,7 @@ export default function Dashboard() {
   const dragStartH = useRef(0);
   const trackLoadingRef = useRef(false);
   const archiveCrewInitRef = useRef(false);
+  const matchedUpToRef = useRef({}); // key: `${crewId}::${date}` -> сколько сырых точек уже смэтчено
 
   useEffect(() => {
     const onResize = () => {
@@ -261,11 +262,30 @@ export default function Dashboard() {
       const rawTrack = trackRes.data;
       setTracks(t => ({ ...t, [selected]: rawTrack }));
       setStops(s => ({ ...s, [selected]: stopRes.data }));
+
       if (rawTrack.length >= 2) {
-        setMatchingLoading(true);
-        const matched = await matchToRoads(rawTrack);
-        setMatchedTracks(m => ({ ...m, [selected]: matched }));
-        setMatchingLoading(false);
+        // Раньше при каждом обновлении весь трек за смену перематчивался
+        // заново через Valhalla, хотя старая часть маршрута уже была
+        // посчитана и не меняется. Запоминаем, сколько сырых точек уже
+        // смэтчено (в привязке к экипажу+дате — иначе переключение на архив
+        // другого дня подхватит чужой кэш), и на следующих обновлениях
+        // досчитываем только новый хвост, приклеивая его к готовой линии.
+        const cacheKey = `${selected}::${date}`;
+        const prevCount = matchedUpToRef.current[cacheKey] || 0;
+
+        if (prevCount !== rawTrack.length) {
+          setMatchingLoading(true);
+          if (prevCount > 0 && prevCount < rawTrack.length) {
+            const tail = rawTrack.slice(prevCount - 1); // с нахлёстом в 1 точку для сшивки
+            const newGeo = await matchToRoads(tail);
+            setMatchedTracks(m => ({ ...m, [selected]: (m[selected] || []).concat(newGeo.slice(1)) }));
+          } else {
+            const matched = await matchToRoads(rawTrack);
+            setMatchedTracks(m => ({ ...m, [selected]: matched }));
+          }
+          matchedUpToRef.current[cacheKey] = rawTrack.length;
+          setMatchingLoading(false);
+        }
       }
     } catch(e) { setMatchingLoading(false); }
     finally { trackLoadingRef.current = false; }

@@ -101,15 +101,24 @@ function haversineM(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// Фильтрация GPS шума — убираем точки ближе MIN_DIST метров
+const MAX_PLAUSIBLE_SPEED_KMH = 180; // защита от GPS-скачков ("холодный старт" GPS даёт дикие первые фиксы) — тот же порог, что и в мобилке
+
+// Фильтрация GPS шума — убираем точки ближе MIN_DIST метров И точки,
+// подразумевающие нереальную скорость (GPS-скачок). Раньше здесь проверялось
+// только расстояние — единичный битый фикс (например, за 2 сек скачок на
+// 17 км сразу после старта трекинга) проходил фильтр и рисовался как прямая
+// линия через город на карте, хотя реального движения там не было.
 function filterTrackPoints(points, minDist = 50) {
   if (points.length < 2) return points;
   const result = [points[0]];
   for (let i = 1; i < points.length; i++) {
     const prev = result[result.length - 1];
-    if (haversineM(prev.lat, prev.lng, points[i].lat, points[i].lng) >= minDist) {
-      result.push(points[i]);
-    }
+    const distM = haversineM(prev.lat, prev.lng, points[i].lat, points[i].lng);
+    if (distM < minDist) continue;
+    const seconds = Math.max(1, (new Date(points[i].recorded_at) - new Date(prev.recorded_at)) / 1000);
+    const impliedSpeedKmh = (distM / seconds) * 3.6;
+    if (impliedSpeedKmh > MAX_PLAUSIBLE_SPEED_KMH) continue; // скачок — пропускаем, "prev" не двигаем
+    result.push(points[i]);
   }
   return result;
 }

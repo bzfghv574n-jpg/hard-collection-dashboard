@@ -134,7 +134,15 @@ async function matchToRoads(points) {
 
   // Фильтруем — минимум 50м между точками
   const filtered = filterTrackPoints(points, 50);
-  if (filtered.length < 2) return { points: points.map(p => [p.lat, p.lng]), hadFallback: false };
+  if (filtered.length < 2) {
+    // Было >=2 сырых точек, но фильтр (расстояние/скачок скорости) схлопнул
+    // их до 0-1 — например, если recorded_at у всех точек почти одинаковый
+    // (см. историю бага с батчами) и каждая точка выглядит как скачок.
+    // hadFallback=true, чтобы не закэшировать этот выродившийся результат
+    // навсегда — как только придут новые точки с нормальными интервалами,
+    // попробуем пересчитать заново.
+    return { points: points.map(p => [p.lat, p.lng]), hadFallback: true };
+  }
 
   const CHUNK = 80;
   let result = [];

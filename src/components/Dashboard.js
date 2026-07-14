@@ -332,7 +332,11 @@ export default function Dashboard() {
       // накопленному пробегу (primary_shift_id) — берём GPS только его смены,
       // а не все подряд, иначе два независимых телефона в одной машине могут
       // дать небольшой зигзаг на линии даже когда мы верно посчитали пробег.
-      const primaryShiftId = crewInfo?.primary_shift_id;
+      // В архиве это неприменимо: crewInfo/primary_shift_id всегда про СЕГОДНЯ
+      // (/dashboard/live не принимает дату), так что при просмотре другого дня
+      // отфильтровало бы весь трек в пустоту, приняв сегодняшний shift_id за
+      // ориентир для чужой даты.
+      const primaryShiftId = !archiveTab ? crewInfo?.primary_shift_id : null;
       const filteredTrack = primaryShiftId ? rawTrack.filter(p => p.shift_id === primaryShiftId) : rawTrack;
 
       if (filteredTrack.length >= 2) {

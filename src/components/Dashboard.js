@@ -775,7 +775,11 @@ export default function Dashboard() {
                   const dimmed = focusedEmployeeId && focusedEmployeeId !== g.employee_id;
                   return g.points.length > 1 && (
                     <Polyline
-                      key={g.employee_id || i}
+                      // react-leaflet не всегда переприменяет opacity/weight к уже
+                      // смонтированному слою при изменении пропсов — меняем key
+                      // вместе с dimmed, чтобы гарантированно пересоздать слой с
+                      // актуальным стилем при клике на карточку сотрудника.
+                      key={`${g.employee_id || i}-${dimmed}`}
                       positions={g.points}
                       color={color}
                       weight={dimmed ? 2 : 3}

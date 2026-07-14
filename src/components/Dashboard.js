@@ -220,6 +220,7 @@ export default function Dashboard() {
   const [archiveViewDate, setArchiveViewDate] = useState(new Date().toISOString().slice(0,10));
   const [flyTo, setFlyTo] = useState(null);
   const [matchingLoading, setMatchingLoading] = useState(false);
+  const [focusedEmployeeId, setFocusedEmployeeId] = useState(null); // выбранный сотрудник в разошедшемся экипаже — какую линию подсветить
   const [lastUpdated, setLastUpdated] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -431,6 +432,7 @@ export default function Dashboard() {
   }, []);
 
   const handleSelectCrew = (crewId) => {
+    setFocusedEmployeeId(null);
     if (selected === crewId) { setSelected(null); setFlyTo(null); return; }
     setSelected(crewId);
     if (mobile) setSidebarOpen(false);
@@ -741,6 +743,10 @@ export default function Dashboard() {
             <MapController flyTo={flyTo} />
             {!archiveTab && crews.map(c => {
               if (!c.last_position) return null;
+              // У выбранного "разошедшегося" экипажа вместо одной общей метки
+              // показываем персональные метки по сотруднику (см. ниже) —
+              // общая тут была бы лишней и не отражала бы, что их двое.
+              if (c.crew.id === selected && c.presence_state === 'divergent') return null;
               const stats = getCrewStats(c.crew.id);
               return (
                 <Marker
@@ -764,18 +770,41 @@ export default function Dashboard() {
               );
             })}
             {selSplit
-              ? selSplit.map((g, i) => g.points.length > 1 && (
-                  <Polyline
-                    key={g.employee_id || i}
-                    positions={g.points}
-                    color={SPLIT_COLORS[i % SPLIT_COLORS.length]}
-                    weight={3}
-                    opacity={0.85}
-                    dashArray={i === 0 ? null : '8 6'}
-                  />
-                ))
+              ? selSplit.map((g, i) => {
+                  const color = SPLIT_COLORS[i % SPLIT_COLORS.length];
+                  const dimmed = focusedEmployeeId && focusedEmployeeId !== g.employee_id;
+                  return g.points.length > 1 && (
+                    <Polyline
+                      key={g.employee_id || i}
+                      positions={g.points}
+                      color={color}
+                      weight={dimmed ? 2 : 3}
+                      opacity={dimmed ? 0.2 : 0.85}
+                      dashArray={i === 0 ? null : '8 6'}
+                    />
+                  );
+                })
               : (selTrack.length > 1 && <Polyline positions={selTrack} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />)
             }
+            {/* Точки-устройства при "разошлись" — где сейчас каждый сотрудник, не только линия */}
+            {!archiveTab && selCrew?.presence_state === 'divergent' && (selCrew.active_detail || []).map((d, i) => d.last_point && (
+              <Marker
+                key={d.shift_id}
+                position={[d.last_point.lat, d.last_point.lng]}
+                icon={crewIcon(SPLIT_COLORS[i % SPLIT_COLORS.length])}
+                eventHandlers={{ click: () => {
+                  const isFocused = focusedEmployeeId === d.employee_id;
+                  setFocusedEmployeeId(isFocused ? null : d.employee_id);
+                } }}
+              >
+                <Popup>
+                  <div style={{ fontFamily: 'Inter, sans-serif', minWidth: 140 }}>
+                    <div style={{ fontWeight: 700 }}>{d.full_name || '?'}</div>
+                    <div style={{ fontSize: 12, marginTop: 4 }}>Пробег: {d.total_km.toFixed(1)} км</div>
+                  </div>
+                </Popup>
+              </Marker>
+            ))}
             {selStops.map((stop, i) => (
               <Marker key={stop.id} position={[stop.lat, stop.lng]} icon={stopIcon(stop.point_label)}>
                 <Popup>
@@ -823,14 +852,29 @@ export default function Dashboard() {
                     ⚠ Сотрудники в разных местах — возможно, кто-то не на рабочем месте
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(selCrew.active_detail?.length || 1, 1)}, 1fr)`, gap: mobile ? 6 : 8 }}>
-                    {(selCrew.active_detail || []).map((d, i) => (
-                      <div key={d.shift_id} style={{ background: '#151820', borderRadius: 7, padding: mobile ? '6px 8px' : '8px 12px', border: `1px solid ${SPLIT_COLORS[i % SPLIT_COLORS.length]}44` }}>
-                        <div style={{ color: SPLIT_COLORS[i % SPLIT_COLORS.length], fontSize: 9, fontWeight: 700 }}>{d.full_name || '?'}</div>
-                        <div style={{ color: '#F1F5F9', fontSize: mobile ? 13 : 16, fontWeight: 800, marginTop: 2 }}>{d.total_km.toFixed(1)} км</div>
-                        <div style={{ color: '#F59E0B', fontSize: 10, marginTop: 2 }}>{d.fuel_used.toFixed(1)} л · {d.fuel_cost.toFixed(0)} ₸</div>
-                      </div>
-                    ))}
+                    {(selCrew.active_detail || []).map((d, i) => {
+                      const color = SPLIT_COLORS[i % SPLIT_COLORS.length];
+                      const isFocused = focusedEmployeeId === d.employee_id;
+                      return (
+                        <div
+                          key={d.shift_id}
+                          onClick={() => {
+                            setFocusedEmployeeId(isFocused ? null : d.employee_id);
+                            if (!isFocused && d.last_point) setFlyTo({ lat: d.last_point.lat, lng: d.last_point.lng });
+                          }}
+                          style={{
+                            background: isFocused ? `${color}22` : '#151820', borderRadius: 7, cursor: 'pointer',
+                            padding: mobile ? '6px 8px' : '8px 12px', border: `1px solid ${color}${isFocused ? 'AA' : '44'}`,
+                          }}
+                        >
+                          <div style={{ color, fontSize: 9, fontWeight: 700 }}>{d.full_name || '?'} {isFocused ? '📍' : ''}</div>
+                          <div style={{ color: '#F1F5F9', fontSize: mobile ? 13 : 16, fontWeight: 800, marginTop: 2 }}>{d.total_km.toFixed(1)} км</div>
+                          <div style={{ color: '#F59E0B', fontSize: 10, marginTop: 2 }}>{d.fuel_used.toFixed(1)} л · {d.fuel_cost.toFixed(0)} ₸</div>
+                        </div>
+                      );
+                    })}
                   </div>
+                  {focusedEmployeeId && <div style={{ fontSize: 9, color: '#475569', marginTop: 6 }}>Показан маршрут выбранного сотрудника — нажмите ещё раз, чтобы показать обоих</div>}
                 </div>
               ) : (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: mobile ? 6 : 8, marginBottom: 10 }}>

@@ -145,6 +145,15 @@ async function matchToRoads(points) {
   }
 
   const CHUNK = 80;
+  // Соседние чанки пересекаются на 1 сырую точку (см. start = i-1 ниже), но
+  // это два НЕЗАВИСИМЫХ запроса к Valhalla — она может смэтчить одну и ту же
+  // точку перекрытия по-разному в каждом чанке (разный контекст маршрута).
+  // Раньше это тихо давало прямую линию на километры в месте стыка (обнаружено
+  // визуально на дашборде — "above al-Farabi below Ryskulov"), потому что HTTP
+  // 200 с валидной геометрией не значит, что геометрия СОГЛАСУЕТСЯ с предыдущим
+  // чанком. Проверяем разрыв на стыке и, если он большой — не доверяем этому
+  // чанку, рисуем прямой линией и просим пересчитать при следующей загрузке.
+  const SEAM_MAX_DEVIATION_M = 500;
   let result = [];
   let hadFallback = false;
 
@@ -168,7 +177,14 @@ async function matchToRoads(points) {
       const shape = res.data?.trip?.legs?.[0]?.shape;
       if (shape) {
         const geo = decodePolyline(shape);
-        result = result.concat(i === 0 ? geo : geo.slice(1));
+        const prevEnd = result.length ? result[result.length - 1] : null;
+        const seamBroken = prevEnd && haversineM(prevEnd[0], prevEnd[1], geo[0][0], geo[0][1]) > SEAM_MAX_DEVIATION_M;
+        if (seamBroken) {
+          hadFallback = true;
+          result = result.concat(chunk.slice(1).map(p => [p.lat, p.lng]));
+        } else {
+          result = result.concat(i === 0 ? geo : geo.slice(1));
+        }
       } else {
         hadFallback = true;
         result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));

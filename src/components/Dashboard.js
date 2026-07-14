@@ -210,6 +210,7 @@ export default function Dashboard() {
   const [selected, setSelected] = useState(null);
   const [tracks, setTracks] = useState({});
   const [matchedTracks, setMatchedTracks] = useState({});
+  const [splitTracks, setSplitTracks] = useState({}); // { [crewId]: [{employee_id, full_name, points, hadFallback}, ...] } — только когда экипаж "разошёлся"
   const [stops, setStops] = useState({});
   const [archiveTab, setArchiveTab] = useState(false);
   const [archiveDate, setArchiveDate] = useState(new Date().toISOString().slice(0,10));
@@ -300,20 +301,55 @@ export default function Dashboard() {
       setTracks(t => ({ ...t, [selected]: rawTrack }));
       setStops(s => ({ ...s, [selected]: stopRes.data }));
 
-      if (rawTrack.length >= 2) {
+      const crewInfo = crews.find(c => c.crew.id === selected);
+      const isDivergent = !archiveTab && crewInfo?.presence_state === 'divergent';
+
+      if (isDivergent) {
+        // Сотрудники разошлись — считаем и рисуем трек каждого ОТДЕЛЬНО.
+        // Без инкрементального кэша: это состояние обычно короткое, и не
+        // стоит усложнять кэш-ключ ради него — просто пересчитываем целиком.
+        const byEmployee = {};
+        for (const p of rawTrack) {
+          const key = p.employee_id || 'unknown';
+          if (!byEmployee[key]) byEmployee[key] = { employee_id: p.employee_id, full_name: p.full_name, points: [] };
+          byEmployee[key].points.push(p);
+        }
+        setMatchingLoading(true);
+        const splitResults = await Promise.all(
+          Object.values(byEmployee).map(async g => {
+            const matched = g.points.length >= 2 ? await matchToRoads(g.points) : { points: g.points.map(p => [p.lat, p.lng]), hadFallback: false };
+            return { employee_id: g.employee_id, full_name: g.full_name, points: matched.points, hadFallback: matched.hadFallback };
+          })
+        );
+        setSplitTracks(m => ({ ...m, [selected]: splitResults }));
+        setMatchingLoading(false);
+        return;
+      }
+      setSplitTracks(m => ({ ...m, [selected]: null }));
+
+      // Не "разошлись" — рисуем одну линию. Если экипаж "вместе" (2+ активных
+      // смены, но физически в одной машине), бэкенд уже выбрал "победителя" по
+      // накопленному пробегу (primary_shift_id) — берём GPS только его смены,
+      // а не все подряд, иначе два независимых телефона в одной машине могут
+      // дать небольшой зигзаг на линии даже когда мы верно посчитали пробег.
+      const primaryShiftId = crewInfo?.primary_shift_id;
+      const filteredTrack = primaryShiftId ? rawTrack.filter(p => p.shift_id === primaryShiftId) : rawTrack;
+
+      if (filteredTrack.length >= 2) {
         // Раньше при каждом обновлении весь трек за смену перематчивался
         // заново через Valhalla, хотя старая часть маршрута уже была
         // посчитана и не меняется. Запоминаем, сколько сырых точек уже
-        // смэтчено (в привязке к экипажу+дате — иначе переключение на архив
-        // другого дня подхватит чужой кэш), и на следующих обновлениях
-        // досчитываем только новый хвост, приклеивая его к готовой линии.
-        const cacheKey = `${selected}::${date}`;
+        // смэтчено (в привязке к экипажу+дате+"победителю" — если лидерство
+        // по пробегу переходит от одного сотрудника к другому, ключ меняется
+        // и мы честно пересчитываем заново, а не приклеиваем чужой хвост),
+        // и на следующих обновлениях досчитываем только новый хвост.
+        const cacheKey = `${selected}::${date}::${primaryShiftId || 'solo'}`;
         const prevCount = matchedUpToRef.current[cacheKey] || 0;
 
-        if (prevCount !== rawTrack.length) {
+        if (prevCount !== filteredTrack.length) {
           setMatchingLoading(true);
-          if (prevCount > 0 && prevCount < rawTrack.length) {
-            const tail = rawTrack.slice(prevCount - 1); // с нахлёстом в 1 точку для сшивки
+          if (prevCount > 0 && prevCount < filteredTrack.length) {
+            const tail = filteredTrack.slice(prevCount - 1); // с нахлёстом в 1 точку для сшивки
             const newGeo = await matchToRoads(tail);
             // Если Valhalla временно недоступна (например, только просыпается
             // после авто-сна на Fly.io) — не приклеиваем неудачный хвост и не
@@ -321,16 +357,16 @@ export default function Dashboard() {
             // заново на следующем обновлении, а не остался прямой линией навсегда.
             if (!newGeo.hadFallback) {
               setMatchedTracks(m => ({ ...m, [selected]: (m[selected] || []).concat(newGeo.points.slice(1)) }));
-              matchedUpToRef.current[cacheKey] = rawTrack.length;
+              matchedUpToRef.current[cacheKey] = filteredTrack.length;
             }
           } else {
-            const matched = await matchToRoads(rawTrack);
+            const matched = await matchToRoads(filteredTrack);
             // Для самого первого матчинга показываем результат, даже если
             // часть чанков не смэтчилась — лучше приблизительная линия, чем
             // пустая карта. Но кэш не продвигаем, чтобы попробовать заново.
             setMatchedTracks(m => ({ ...m, [selected]: matched.points }));
             if (!matched.hadFallback) {
-              matchedUpToRef.current[cacheKey] = rawTrack.length;
+              matchedUpToRef.current[cacheKey] = filteredTrack.length;
             }
           }
           setMatchingLoading(false);
@@ -338,7 +374,7 @@ export default function Dashboard() {
       }
     } catch(e) { setMatchingLoading(false); }
     finally { trackLoadingRef.current = false; }
-  }, [selected, archiveTab, archiveViewDate]);
+  }, [selected, archiveTab, archiveViewDate, crews]);
 
   useEffect(() => {
     if (!selected) return;
@@ -352,7 +388,12 @@ export default function Dashboard() {
   const refreshNow = async () => {
     setRefreshing(true);
     try {
-      await Promise.all([load(), loadTrack()]);
+      // Не Promise.all: loadTrack читает presence_state/primary_shift_id из
+      // crews, чтобы решить, рисовать одну линию или две "разошедшиеся" — если
+      // запустить их параллельно, loadTrack захватит ЕЩЁ СТАРОЕ состояние crews
+      // (до завершения load()) и не увидит только что случившееся расхождение.
+      await load();
+      await loadTrack();
     } finally {
       setRefreshing(false);
     }
@@ -400,6 +441,8 @@ export default function Dashboard() {
   const selCrew = crews.find(c => c.crew.id === selected);
   const selTrack = matchedTracks[selected] || tracks[selected]?.map(p => [p.lat, p.lng]) || [];
   const selStops = stops[selected] || [];
+  const selSplit = !archiveTab && selCrew?.presence_state === 'divergent' ? splitTracks[selected] : null;
+  const SPLIT_COLORS = ['#3B82F6', '#EF4444', '#F59E0B', '#22C55E'];
 
   const getCrewStats = (crewId) => {
     if (archiveTab && archiveStats[crewId]) return archiveStats[crewId];
@@ -623,6 +666,7 @@ export default function Dashboard() {
               const memberCount = c.crew.crew_members?.length || 0;
               const onlineCount = c.shifts?.length || 0;
               const incomplete = !archiveTab && onlineCount > 0 && onlineCount < memberCount;
+              const diverged = !archiveTab && c.presence_state === 'divergent';
               return (
                 <div key={c.crew.id} onClick={() => handleSelectCrew(c.crew.id)} style={{
                   padding: '9px 11px', borderRadius: 9, cursor: 'pointer', marginBottom: 6,
@@ -635,6 +679,7 @@ export default function Dashboard() {
                     {!archiveTab && <Tag status={crewStatus} />}
                   </div>
                   {incomplete && <div style={{ marginLeft: 16, marginBottom: 3 }}><span style={{ fontSize: 9, color: '#F59E0B', fontWeight: 700 }}>⚠ НЕПОЛНЫЙ {onlineCount}/{memberCount}</span></div>}
+                  {diverged && <div style={{ marginLeft: 16, marginBottom: 3 }}><span style={{ fontSize: 9, color: '#EF4444', fontWeight: 700 }}>⚠ РАЗДЕЛИЛИСЬ</span></div>}
                   <div style={{ color: '#475569', fontSize: 10, paddingLeft: 16 }}>{c.crew.car_brand} {c.crew.car_model} · {stats.total_km.toFixed(1)} км</div>
                 </div>
               );
@@ -714,7 +759,19 @@ export default function Dashboard() {
                 </Marker>
               );
             })}
-            {selTrack.length > 1 && <Polyline positions={selTrack} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />}
+            {selSplit
+              ? selSplit.map((g, i) => g.points.length > 1 && (
+                  <Polyline
+                    key={g.employee_id || i}
+                    positions={g.points}
+                    color={SPLIT_COLORS[i % SPLIT_COLORS.length]}
+                    weight={3}
+                    opacity={0.85}
+                    dashArray={i === 0 ? null : '8 6'}
+                  />
+                ))
+              : (selTrack.length > 1 && <Polyline positions={selTrack} color={selCrew?.crew?.color || '#3B82F6'} weight={3} opacity={0.8} />)
+            }
             {selStops.map((stop, i) => (
               <Marker key={stop.id} position={[stop.lat, stop.lng]} icon={stopIcon(stop.point_label)}>
                 <Popup>
@@ -753,23 +810,40 @@ export default function Dashboard() {
                 <button onClick={() => { setSelected(null); setFlyTo(null); }} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
               </div>
 
-              {/* KPI */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: mobile ? 6 : 8, marginBottom: 10 }}>
-                {(() => {
-                  const stats = getCrewStats(selCrew.crew.id);
-                  return [
-                    { label: 'ПРОБЕГ', value: `${stats.total_km.toFixed(1)} км`, color: '#3B82F6' },
-                    { label: 'РАСХОД', value: `${stats.fuel_used.toFixed(1)} л`, color: '#F59E0B' },
-                    { label: 'СТОИМ', value: `${stats.fuel_cost.toFixed(0)} ₸`, color: '#F59E0B' },
-                    { label: 'ТОЧЕК', value: selStops.length, color: '#22C55E' },
-                  ].map((s, i) => (
-                    <div key={i} style={{ background: '#151820', borderRadius: 7, padding: mobile ? '6px 8px' : '8px 12px', border: '1px solid #2A2F42' }}>
-                      <div style={{ color: '#475569', fontSize: 8, fontWeight: 700, letterSpacing: '0.06em' }}>{s.label}</div>
-                      <div style={{ color: s.color, fontSize: mobile ? 14 : 18, fontWeight: 800, marginTop: 2 }}>{s.value}</div>
-                    </div>
-                  ));
-                })()}
-              </div>
+              {/* KPI — при "разошлись" не гадаем одним числом, показываем раздельно по сотруднику */}
+              {selCrew.presence_state === 'divergent' ? (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ background: '#2A1015', border: '1px solid #EF444466', borderRadius: 7, padding: '8px 10px', marginBottom: 8, color: '#F87171', fontSize: 11, fontWeight: 600 }}>
+                    ⚠ Сотрудники в разных местах — возможно, кто-то не на рабочем месте
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(selCrew.active_detail?.length || 1, 1)}, 1fr)`, gap: mobile ? 6 : 8 }}>
+                    {(selCrew.active_detail || []).map((d, i) => (
+                      <div key={d.shift_id} style={{ background: '#151820', borderRadius: 7, padding: mobile ? '6px 8px' : '8px 12px', border: `1px solid ${SPLIT_COLORS[i % SPLIT_COLORS.length]}44` }}>
+                        <div style={{ color: SPLIT_COLORS[i % SPLIT_COLORS.length], fontSize: 9, fontWeight: 700 }}>{d.full_name || '?'}</div>
+                        <div style={{ color: '#F1F5F9', fontSize: mobile ? 13 : 16, fontWeight: 800, marginTop: 2 }}>{d.total_km.toFixed(1)} км</div>
+                        <div style={{ color: '#F59E0B', fontSize: 10, marginTop: 2 }}>{d.fuel_used.toFixed(1)} л · {d.fuel_cost.toFixed(0)} ₸</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: mobile ? 6 : 8, marginBottom: 10 }}>
+                  {(() => {
+                    const stats = getCrewStats(selCrew.crew.id);
+                    return [
+                      { label: 'ПРОБЕГ', value: `${stats.total_km.toFixed(1)} км`, color: '#3B82F6' },
+                      { label: 'РАСХОД', value: `${stats.fuel_used.toFixed(1)} л`, color: '#F59E0B' },
+                      { label: 'СТОИМ', value: `${stats.fuel_cost.toFixed(0)} ₸`, color: '#F59E0B' },
+                      { label: 'ТОЧЕК', value: selStops.length, color: '#22C55E' },
+                    ].map((s, i) => (
+                      <div key={i} style={{ background: '#151820', borderRadius: 7, padding: mobile ? '6px 8px' : '8px 12px', border: '1px solid #2A2F42' }}>
+                        <div style={{ color: '#475569', fontSize: 8, fontWeight: 700, letterSpacing: '0.06em' }}>{s.label}</div>
+                        <div style={{ color: s.color, fontSize: mobile ? 14 : 18, fontWeight: 800, marginTop: 2 }}>{s.value}</div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
 
               {/* Точки — дедупликация по координатам+время */}
               {selStops.length > 0 && (() => {

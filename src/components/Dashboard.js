@@ -123,15 +123,22 @@ function filterTrackPoints(points, minDist = 50) {
   return result;
 }
 
+// Возвращает { points, hadFallback } — hadFallback=true значит хотя бы один
+// чанк не смэтчился (например, Valhalla ещё просыпается после авто-сна на
+// Fly.io и на секунду отвечает 502) и был нарисован прямой линией. Вызывающий
+// код (loadTrack) должен в этом случае НЕ продвигать кэш "уже смэтчено" дальше
+// этого куска — иначе неудачный запасной вариант так и останется навсегда,
+// и последующие обновления его не попробуют пересчитать.
 async function matchToRoads(points) {
-  if (points.length < 2) return points.map(p => [p.lat, p.lng]);
+  if (points.length < 2) return { points: points.map(p => [p.lat, p.lng]), hadFallback: false };
 
   // Фильтруем — минимум 50м между точками
   const filtered = filterTrackPoints(points, 50);
-  if (filtered.length < 2) return points.map(p => [p.lat, p.lng]);
+  if (filtered.length < 2) return { points: points.map(p => [p.lat, p.lng]), hadFallback: false };
 
   const CHUNK = 80;
   let result = [];
+  let hadFallback = false;
 
   for (let i = 0; i < filtered.length; i += CHUNK) {
     const start = i === 0 ? 0 : i - 1;
@@ -155,15 +162,17 @@ async function matchToRoads(points) {
         const geo = decodePolyline(shape);
         result = result.concat(i === 0 ? geo : geo.slice(1));
       } else {
+        hadFallback = true;
         result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));
       }
     } catch (e) {
       // Fallback — прямые линии для этого чанка
+      hadFallback = true;
       result = result.concat(i === 0 ? chunk.map(p => [p.lat, p.lng]) : chunk.slice(1).map(p => [p.lat, p.lng]));
     }
   }
 
-  return result.length > 1 ? result : filtered.map(p => [p.lat, p.lng]);
+  return { points: result.length > 1 ? result : filtered.map(p => [p.lat, p.lng]), hadFallback };
 }
 
 export default function Dashboard() {
@@ -278,12 +287,24 @@ export default function Dashboard() {
           if (prevCount > 0 && prevCount < rawTrack.length) {
             const tail = rawTrack.slice(prevCount - 1); // с нахлёстом в 1 точку для сшивки
             const newGeo = await matchToRoads(tail);
-            setMatchedTracks(m => ({ ...m, [selected]: (m[selected] || []).concat(newGeo.slice(1)) }));
+            // Если Valhalla временно недоступна (например, только просыпается
+            // после авто-сна на Fly.io) — не приклеиваем неудачный хвост и не
+            // продвигаем кэш, чтобы этот же участок целиком пересчитался
+            // заново на следующем обновлении, а не остался прямой линией навсегда.
+            if (!newGeo.hadFallback) {
+              setMatchedTracks(m => ({ ...m, [selected]: (m[selected] || []).concat(newGeo.points.slice(1)) }));
+              matchedUpToRef.current[cacheKey] = rawTrack.length;
+            }
           } else {
             const matched = await matchToRoads(rawTrack);
-            setMatchedTracks(m => ({ ...m, [selected]: matched }));
+            // Для самого первого матчинга показываем результат, даже если
+            // часть чанков не смэтчилась — лучше приблизительная линия, чем
+            // пустая карта. Но кэш не продвигаем, чтобы попробовать заново.
+            setMatchedTracks(m => ({ ...m, [selected]: matched.points }));
+            if (!matched.hadFallback) {
+              matchedUpToRef.current[cacheKey] = rawTrack.length;
+            }
           }
-          matchedUpToRef.current[cacheKey] = rawTrack.length;
           setMatchingLoading(false);
         }
       }

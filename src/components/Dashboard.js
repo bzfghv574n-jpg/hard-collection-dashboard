@@ -814,8 +814,10 @@ export default function Dashboard() {
                 <button onClick={() => { setSelected(null); setFlyTo(null); }} style={{ background: 'transparent', border: 'none', color: '#475569', cursor: 'pointer', fontSize: 16 }}>✕</button>
               </div>
 
-              {/* KPI — при "разошлись" не гадаем одним числом, показываем раздельно по сотруднику */}
-              {selCrew.presence_state === 'divergent' ? (
+              {/* KPI — при "разошлись" не гадаем одним числом, показываем раздельно по сотруднику.
+                  presence_state всегда про СЕГОДНЯ (см. комментарий у primaryShiftId в loadTrack) —
+                  в архиве других дней это неприменимо, там просто обычная сводка по getCrewStats. */}
+              {!archiveTab && selCrew.presence_state === 'divergent' ? (
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ background: '#2A1015', border: '1px solid #EF444466', borderRadius: 7, padding: '8px 10px', marginBottom: 8, color: '#F87171', fontSize: 11, fontWeight: 600 }}>
                     ⚠ Сотрудники в разных местах — возможно, кто-то не на рабочем месте

@@ -283,9 +283,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!archiveTab || !crews.length) return;
+    // Та же гонка запросов, что и в loadArchiveNotifications ниже — быстрая
+    // смена периода могла оставить на экране цифры от уже неактуального запроса.
+    let cancelled = false;
     const loadArchiveStats = async () => {
       try {
         const res = await axios.get(`${API}/reports/summary`, { params: { date_from: archiveDate, date_to: archiveDateTo } });
+        if (cancelled) return;
         const stats = {};
         for (const shift of res.data) {
           const cid = shift.crew_id;
@@ -298,6 +302,7 @@ export default function Dashboard() {
       } catch(e) {}
     };
     loadArchiveStats();
+    return () => { cancelled = true; };
   }, [archiveTab, archiveDate, archiveDateTo, crews.length]);
 
   // Уведомления (неполный состав/разошлись/долгая стоянка) за конкретный
@@ -306,11 +311,17 @@ export default function Dashboard() {
   // уведомлений, который бэкенд уже пишет перед отправкой в Telegram.
   useEffect(() => {
     if (!archiveTab) return;
+    // Гонка: если archiveViewDate меняют быстро (например, дёргают дату туда-
+    // сюда), несколько запросов оказываются в полёте одновременно и приходят
+    // не по порядку — без этой защиты выигрывает тот, кто ОТВЕТИЛ последним,
+    // а не тот, что относится к АКТУАЛЬНОЙ дате. cancelled гасит устаревшие.
+    let cancelled = false;
     const loadArchiveNotifications = async () => {
       try {
         const dayStart = `${archiveViewDate}T00:00:00Z`;
         const dayEnd = `${archiveViewDate}T23:59:59Z`;
         const res = await axios.get(`${API}/notifications`, { params: { since: dayStart, until: dayEnd, limit: 500 } });
+        if (cancelled) return;
         const byCrewe = {};
         for (const n of res.data) {
           if (!byCrewe[n.crew_id]) byCrewe[n.crew_id] = [];
@@ -320,6 +331,7 @@ export default function Dashboard() {
       } catch(e) {}
     };
     loadArchiveNotifications();
+    return () => { cancelled = true; };
   }, [archiveTab, archiveViewDate]);
 
   const loadTrack = useCallback(async () => {

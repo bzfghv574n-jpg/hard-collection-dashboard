@@ -510,7 +510,12 @@ export default function Dashboard() {
   });
 
   const getCrewStats = (crewId) => {
-    if (archiveTab && archiveStats[crewId]) return archiveStats[crewId];
+    // В архиве, если у экипажа НЕТ смен за выбранный период, archiveStats[crewId]
+    // отсутствует (не 0, а именно undefined) — раньше это тихо проваливалось на
+    // return ниже и показывало ЖИВОЙ (сегодняшний) пробег экипажа вместо 0 за
+    // архивный период, в котором он не работал. Для архива всегда 0, если нет
+    // записи, и никогда не подмешиваем live-данные.
+    if (archiveTab) return archiveStats[crewId] || { total_km: 0, fuel_used: 0, fuel_cost: 0 };
     const c = crews.find(x => x.crew.id === crewId);
     return { total_km: c?.total_km || 0, fuel_used: c?.total_fuel || 0, fuel_cost: c?.total_cost || 0 };
   };

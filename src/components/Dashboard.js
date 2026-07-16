@@ -310,7 +310,6 @@ export default function Dashboard() {
   // так что для прошлых дат единственный источник "что произошло" — журнал
   // уведомлений, который бэкенд уже пишет перед отправкой в Telegram.
   useEffect(() => {
-    console.error('[DEBUG] notif effect fired, archiveTab=', archiveTab, 'archiveViewDate=', archiveViewDate);
     if (!archiveTab) return;
     // Гонка: если archiveViewDate меняют быстро (например, дёргают дату туда-
     // сюда), несколько запросов оказываются в полёте одновременно и приходят

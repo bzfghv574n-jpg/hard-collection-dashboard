@@ -101,6 +101,19 @@ function haversineM(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
+// Убираем дубли остановок: если координаты (с точностью 3 знака) и время
+// прибытия совпадают — это повторная отправка одной и той же точки с
+// мобилки (например, ретрай при обрыве сети), а не два разных события.
+function dedupeStops(stops) {
+  const seen = new Set();
+  return stops.filter(stop => {
+    const key = `${stop.lat.toFixed(3)}_${stop.lng.toFixed(3)}_${stop.arrived_at}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 const MAX_PLAUSIBLE_SPEED_KMH = 180; // защита от GPS-скачков ("холодный старт" GPS даёт дикие первые фиксы) — тот же порог, что и в мобилке
 
 // Фильтрация GPS шума — убираем точки ближе MIN_DIST метров И точки,
@@ -217,6 +230,7 @@ export default function Dashboard() {
   const [archiveDateTo, setArchiveDateTo] = useState(new Date().toISOString().slice(0,10));
   const [archiveCrew, setArchiveCrew] = useState('');
   const [archiveStats, setArchiveStats] = useState({});
+  const [archiveNotifications, setArchiveNotifications] = useState({}); // { [crewId]: [{type, message, created_at}, ...] } за просматриваемый архивный день
   const [archiveViewDate, setArchiveViewDate] = useState(new Date().toISOString().slice(0,10));
   const [flyTo, setFlyTo] = useState(null);
   const [matchingLoading, setMatchingLoading] = useState(false);
@@ -285,6 +299,28 @@ export default function Dashboard() {
     };
     loadArchiveStats();
   }, [archiveTab, archiveDate, archiveDateTo, crews.length]);
+
+  // Уведомления (неполный состав/разошлись/долгая стоянка) за конкретный
+  // архивный день — presence_state с /dashboard/live отражает только СЕГОДНЯ,
+  // так что для прошлых дат единственный источник "что произошло" — журнал
+  // уведомлений, который бэкенд уже пишет перед отправкой в Telegram.
+  useEffect(() => {
+    if (!archiveTab) return;
+    const loadArchiveNotifications = async () => {
+      try {
+        const dayStart = `${archiveViewDate}T00:00:00Z`;
+        const dayEnd = `${archiveViewDate}T23:59:59Z`;
+        const res = await axios.get(`${API}/notifications`, { params: { since: dayStart, until: dayEnd, limit: 500 } });
+        const byCrewe = {};
+        for (const n of res.data) {
+          if (!byCrewe[n.crew_id]) byCrewe[n.crew_id] = [];
+          byCrewe[n.crew_id].push(n);
+        }
+        setArchiveNotifications(byCrewe);
+      } catch(e) {}
+    };
+    loadArchiveNotifications();
+  }, [archiveTab, archiveViewDate]);
 
   const loadTrack = useCallback(async () => {
     if (!selected) return;
@@ -449,6 +485,17 @@ export default function Dashboard() {
   const selStops = stops[selected] || [];
   const selSplit = !archiveTab && selCrew?.presence_state === 'divergent' ? splitTracks[selected] : null;
   const SPLIT_COLORS = ['#3B82F6', '#EF4444', '#F59E0B', '#22C55E'];
+  // Флажок финиша на конце трека: в архиве смена по определению за прошедший
+  // день, всегда завершена; в live — только если ни одна смена сегодня уже не
+  // активна (все статусы дошли до "finished"), а не просто "сейчас офлайн".
+  const selFinished = archiveTab
+    ? selTrack.length > 1
+    : !!(selCrew?.shifts?.length && !selCrew.shifts.some(s => ['active', 'break', 'tech'].includes(s.status)) && selTrack.length > 1);
+  const finishIcon = L.divIcon({
+    className: '',
+    html: `<div style="width:26px;height:26px;border-radius:50%;background:#1C2030;border:2px solid #94A3B8;display:flex;align-items:center;justify-content:center;font-size:13px;">🏁</div>`,
+    iconSize: [26, 26], iconAnchor: [13, 13],
+  });
 
   const getCrewStats = (crewId) => {
     if (archiveTab && archiveStats[crewId]) return archiveStats[crewId];
@@ -556,7 +603,10 @@ export default function Dashboard() {
         for (const day of days.sort()) {
           try {
             const stopsRes = await axios.get(`${API}/stops/${cid}`, { params: { shift_date: day } });
-            stopsRes.data.forEach(st => stopRows.push({
+            // Та же дедупликация, что и в живом просмотре — иначе повторно
+            // отправленная с мобилки точка (ретрай при обрыве сети) попадает
+            // в отчёт дважды с одинаковой меткой и временем.
+            dedupeStops(stopsRes.data).forEach(st => stopRows.push({
               'Дата': day,
               'Экипаж': crewName,
               'Метка': st.point_label,
@@ -673,6 +723,14 @@ export default function Dashboard() {
               const onlineCount = c.shifts?.length || 0;
               const incomplete = !archiveTab && onlineCount > 0 && onlineCount < memberCount;
               const diverged = !archiveTab && c.presence_state === 'divergent';
+              // В архиве presence_state недоступен (он всегда про сегодня) — то,
+              // что реально произошло в этот день, берём из журнала уведомлений.
+              const dayNotifs = archiveTab ? (archiveNotifications[c.crew.id] || []) : [];
+              const dayBadges = [
+                dayNotifs.some(n => n.type === 'incomplete_crew') && { label: '⚠ БЫЛ НЕПОЛНЫЙ СОСТАВ', color: '#F59E0B' },
+                dayNotifs.some(n => n.type === 'crew_diverged') && { label: '⚠ ЭКИПАЖ РАСХОДИЛСЯ', color: '#EF4444' },
+                dayNotifs.some(n => n.type === 'long_stop') && { label: '🛑 БЫЛА ДОЛГАЯ СТОЯНКА', color: '#A855F7' },
+              ].filter(Boolean);
               return (
                 <div key={c.crew.id} onClick={() => handleSelectCrew(c.crew.id)} style={{
                   padding: '9px 11px', borderRadius: 9, cursor: 'pointer', marginBottom: 6,
@@ -686,6 +744,11 @@ export default function Dashboard() {
                   </div>
                   {incomplete && <div style={{ marginLeft: 16, marginBottom: 3 }}><span style={{ fontSize: 9, color: '#F59E0B', fontWeight: 700 }}>⚠ НЕПОЛНЫЙ {onlineCount}/{memberCount}</span></div>}
                   {diverged && <div style={{ marginLeft: 16, marginBottom: 3 }}><span style={{ fontSize: 9, color: '#EF4444', fontWeight: 700 }}>⚠ РАЗДЕЛИЛИСЬ</span></div>}
+                  {dayBadges.length > 0 && (
+                    <div style={{ marginLeft: 16, marginBottom: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                      {dayBadges.map((b, i) => <span key={i} style={{ fontSize: 9, color: b.color, fontWeight: 700 }}>{b.label}</span>)}
+                    </div>
+                  )}
                   <div style={{ color: '#475569', fontSize: 10, paddingLeft: 16 }}>{c.crew.car_brand} {c.crew.car_model} · {stats.total_km.toFixed(1)} км</div>
                 </div>
               );
@@ -809,6 +872,16 @@ export default function Dashboard() {
                 </Popup>
               </Marker>
             ))}
+            {/* Финиш — смена завершена, конец трека помечен флажком, а не просто обрывается */}
+            {selFinished && !selSplit && (
+              <Marker position={selTrack[selTrack.length - 1]} icon={finishIcon}>
+                <Popup>
+                  <div style={{ fontFamily: 'Inter, sans-serif' }}>
+                    <div style={{ fontWeight: 700 }}>🏁 Смена завершена</div>
+                  </div>
+                </Popup>
+              </Marker>
+            )}
             {selStops.map((stop, i) => (
               <Marker key={stop.id} position={[stop.lat, stop.lng]} icon={stopIcon(stop.point_label)}>
                 <Popup>
@@ -901,14 +974,7 @@ export default function Dashboard() {
 
               {/* Точки — дедупликация по координатам+время */}
               {selStops.length > 0 && (() => {
-                // Убираем дубли: если координаты совпадают с точностью 3 знака и время прибытия одинаковое
-                const seen = new Set();
-                const uniqueStops = selStops.filter(stop => {
-                  const key = `${stop.lat.toFixed(3)}_${stop.lng.toFixed(3)}_${stop.arrived_at}`;
-                  if (seen.has(key)) return false;
-                  seen.add(key);
-                  return true;
-                });
+                const uniqueStops = dedupeStops(selStops);
                 return (
                   <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
                     {uniqueStops.map((stop, i) => {
